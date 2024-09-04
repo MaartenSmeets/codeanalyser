@@ -12,10 +12,10 @@ import shutil
 import subprocess
 
 # Configuration: Specify the Ollama model and context length
-OLLAMA_MODEL = 'deepseek-coder-v2:16b-lite-instruct-q4_K_M'
-TOKENIZER_NAME = "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct"
+OLLAMA_MODEL = 'gemma2:9b-instruct-q8_0'
+TOKENIZER_NAME = "google/gemma-2-9b-it"
 CACHE_DIR = 'llm_cache'
-MAX_CONTEXT_LENGTH = 32000  # Maximum token length for a single prompt
+MAX_CONTEXT_LENGTH = 8192  # Maximum token length for a single prompt
 SUMMARIES_DIR = "summaries"
 UNPROCESSED_DIR = "unprocessed_files"
 MERMAID_DIR = "mermaid"
@@ -103,7 +103,7 @@ def generate_response_with_ollama(prompt, model=OLLAMA_MODEL):
         logging.debug(f"Prompt used: {prompt[:200]}...")
         logging.debug(f"Traceback: {traceback.format_exc()}")
         cache.close()
-        return ""
+        raise e  # Re-raise the exception to allow the calling function to handle it.
 
 # Function to generate a Mermaid diagram based on the LLM-generated codebase summary
 def generate_mermaid_diagram_from_llm_summary(llm_summary, mermaid_file, output_png):
@@ -144,8 +144,8 @@ def summarize_chunk_summaries(chunk_summaries, file_path, model=OLLAMA_MODEL):
     - Key methods, components, or modules, and their roles within the file.
     - Dependencies, including any external libraries, frameworks, or other files.
     - Any relevant insights into the data flow, such as inputs, outputs, and how data is processed or transformed.
-    Only include information that is directly useful for understanding the file's function within the codebase. Avoid including any irrelevant details or assumptions.
-    If applicable, describe specific data used, functional interactions, and how this file contributes to the broader functionality of the system.
+    Only include information that is directly useful for understanding the file's function within the codebase. Avoid including any irrelevant details, assumptions or opinions.
+    If applicable, describe specific data used, functional interactions, and (when possible to determine) how this file contributes to the broader functionality of the system.
     Here are the chunk summaries: {chunk_summary_text}
     """
 
@@ -173,21 +173,28 @@ def summarize_codebase(directory, model=OLLAMA_MODEL):
             logging.warning(f"Skipping unreadable or empty file: {file_path}")
             continue
 
-        summary, is_test_file = generate_summary(file_path, file_content, model)
+        try:
+            summary, is_test_file = generate_summary(file_path, file_content, model)
 
-        if is_test_file:
-            logging.info(f"Test file detected and skipped: {file_path}")
-            continue
+            if is_test_file:
+                logging.info(f"Test file detected and skipped: {file_path}")
+                continue
 
-        if summary:
-            codebase_summary.append(f"{summary}\n")
-            file_summary_path = generate_unique_filename(
-                os.path.basename(file_path), "summary.txt")
-            save_output_to_file(summary, os.path.join(
-                SUMMARIES_DIR, file_summary_path))
+            if summary:
+                # Include relative path and filename in the summary for reference
+                formatted_summary = f"File: {file_path}\n\n{summary}\n"
+                codebase_summary.append(formatted_summary)
+                file_summary_path = generate_unique_filename(
+                    os.path.basename(file_path), "summary.txt")
+                save_output_to_file(formatted_summary, os.path.join(
+                    SUMMARIES_DIR, file_summary_path))
 
-        if idx % 5 == 0 or idx == total_files:
-            logging.info(f"Progress: {idx}/{total_files} files processed.")
+            if idx % 5 == 0 or idx == total_files:
+                logging.info(f"Progress: {idx}/{total_files} files processed.")
+        except Exception:
+            logging.error(f"Error processing file: {file_path}")
+            # Copy the file to unprocessed_files if it fails
+            copy_unreadable_file(file_path, directory, UNPROCESSED_DIR)
 
     # Combine all file summaries for the Mermaid diagram
     combined_summary = "\n".join(codebase_summary)
@@ -236,10 +243,10 @@ def generate_summary(file_path, file_content, model=OLLAMA_MODEL):
     You are summarizing a file in a software repository. 
     Provide only a specific and concise but detailed and complete English structured summary of this file. 
     Only provide relevant information and nothing else. Be specific referring to content of the provided file and not general.
-    Do not make assumptions. Avoid redundancy.
+    Do not make assumptions or provide opinions. Avoid redundancy.
     Only when relevant and useful for understanding the function of the file and codebase as a whole, 
     explicitly and completely mention information like inputs, outputs, specific dependencies, 
-    specific data used, and describe functional data flow through this file.
+    specific data used, and describe functional data flow through this file for as far as it can be determined from the provided context.
 
     - The filename: {file_path}
     """
@@ -280,7 +287,7 @@ def generate_summary(file_path, file_content, model=OLLAMA_MODEL):
         for i, chunk in enumerate(chunks):
             chunk_prompt = f"""
             You are summarizing a chunk of a larger file. This is chunk {i+1} of {len(chunks)}.
-            Summarize the content of this chunk accurately and specifically. Do not make assumptions about the whole file or include unnecessary information.
+            Summarize the content of this chunk accurately and specifically. Do not make assumptions about the whole file or include unnecessary information such as assumptions and opinions.
             
             - The filename: {file_path}
             Chunk Content:
