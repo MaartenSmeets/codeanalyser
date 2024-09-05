@@ -105,48 +105,26 @@ def generate_response_with_ollama(prompt, model=OLLAMA_MODEL):
         cache.close()
         raise e  # Re-raise the exception to allow the calling function to handle it.
 
-# Function to generate a Mermaid diagram based on the LLM-generated codebase summary
-def generate_mermaid_diagram_from_llm_summary(llm_summary, mermaid_file, output_png):
-    logging.info("Generating Mermaid diagram based on LLM codebase summary...")
-
-    # Use the LLM summary to create relationships for the Mermaid diagram
-    diagram_content = f"""
-    graph TD;
-    classDef default fill:#f9f,stroke:#333,stroke-width:2px;
-
-    subgraph Codebase_Structure
-    {llm_summary}
-    end
-    """
-
-    # Save the Mermaid diagram to file
-    with open(mermaid_file, 'w') as f:
-        f.write(diagram_content)
-
-    # Convert the Mermaid diagram to PNG using mermaid-cli
-    try:
-        subprocess.run(["mmdc", "-i", mermaid_file, "-o", output_png], check=True)
-        logging.info(f"Mermaid diagram saved as PNG at {output_png}")
-    except subprocess.CalledProcessError as e:
-        logging.error(f"Failed to generate Mermaid PNG: {e}")
-
 # Function to summarize chunks and save the result
 def summarize_chunk_summaries(chunk_summaries, file_path, model=OLLAMA_MODEL):
     chunk_summary_text = "\n\n".join(chunk_summaries)
 
     prompt = f"""
-    You have just summarized a large file in multiple parts. Now, based on the following chunk summaries, create a single, specific, and structured summary of the entire file:
+    You have summarized a large file in multiple chunks. Now, based on the following individual chunk summaries, create a single cohesive, structured, and factual summary of the entire file.
 
-    Filename: {file_path}
-    Combine all relevant details, ensuring there is no duplication.
-    Focus on the key aspects such as:
-    - The overall purpose and functionality of the file.
-    - Key methods, components, or modules, and their roles within the file.
-    - Dependencies, including any external libraries, frameworks, or other files.
-    - Any relevant insights into the data flow, such as inputs, outputs, and how data is processed or transformed.
-    Only include information that is directly useful for understanding the file's function within the codebase. Avoid including any irrelevant details, assumptions or opinions.
-    If applicable, describe specific data used, functional interactions, and (when possible to determine) how this file contributes to the broader functionality of the system.
-    Here are the chunk summaries: {chunk_summary_text}
+    File: {file_path}
+
+    Instructions for the final summary:
+    - **Integrate** all the relevant information from the chunk summaries without duplicating content.
+    - Provide a clear **overview of the file's purpose** and its role within the software repository.
+    - Highlight the most significant **functions, classes, modules**, or **methods**, and describe their specific roles in the file.
+    - Mention any **dependencies** (e.g., external libraries, APIs) and how they interact with the file.
+    - Include key information about **inputs**, **outputs**, and **data flow**.
+    - Avoid any **assumptions**, **opinions**, **irrelevant details** or **asking/suggesting to the user** (such as 'let me know'.. consider the user non-esistent).
+    - Ensure the summary is concise yet comprehensive enough to convey the file’s overall functionality.
+    
+    Here are the chunk summaries:
+    {chunk_summary_text}
     """
 
     final_summary = generate_response_with_ollama(prompt, model)
@@ -206,24 +184,52 @@ def summarize_codebase(directory, model=OLLAMA_MODEL):
         save_output_to_file(combined_summary, summary_file)
 
         # Ask the LLM to generate the Mermaid diagram from the summary
-        llm_mermaid_prompt = f"""
-        Based on the following codebase summary, generate a detailed Mermaid diagram that captures:
-        - Functional flows
-        - Data objects and their relationships
-        - Dependencies between modules
-        - Architecture and logical units
-        - Key components and their interactions
-        - Any other relevant structural information
+        llm_mermaid_prompt = f"""Based on the comprehensive summary of the entire codebase below, generate a detailed and insightful Mermaid diagram that focuses on the **overall architecture** and **functional flow** of the system. This diagram should offer a high-level, conceptual view of how the different components and modules work together, emphasizing the architectural design and system functionality rather than the granular details of individual files. Ensure the diagram captures the following key aspects:
 
-        Codebase Summary:
+        1. **System Architecture**: Clearly represent the high-level architecture of the codebase, including core modules, services, and subsystems. Highlight how these components are organized and how they interact to form the overall system.
+        - Focus on how different parts of the codebase contribute to the main system functionality.
+        - Show the separation of concerns between major system components, subsystems, or layers (e.g., application logic, data access, service integration).
+
+        2. **Functional Relationships**: Illustrate how the system's core functionalities are distributed across different modules or services. Depict the key functional units, their roles, and how they communicate with each other.
+        - Show how data, control, and execution flow between these units.
+        - Highlight any major processes or workflows that span across multiple components or layers.
+
+        3. **Key Interactions and Dependencies**: Show the key interactions between the system’s components and any important dependencies (both internal and external). This includes:
+        - Interactions between major system modules (e.g., service layers, APIs, database access).
+        - External dependencies such as third-party libraries, APIs, or services that are critical to the system’s operation.
+
+        4. **Data Flow and Processes**: Visualize how data is handled, processed, and transformed across the system. Show the flow of information from inputs to outputs, and any key transformation or decision points.
+        - Focus on critical data processing pathways or pipelines.
+        - Indicate how data is exchanged between subsystems or modules, including key storage and retrieval mechanisms if applicable.
+
+        5. **Major Components and Responsibilities**: Highlight the primary components or services within the system, and succinctly represent their responsibilities within the larger architecture.
+        - Identify core system functionalities that are handled by specific components (e.g., data processing, user authentication, communication with external services).
+
+        6. **Logical Grouping of Components**: Group related components or services into logical clusters that reflect how they function together within the broader architecture. This could include layers (e.g., user interface, business logic, data storage), services, or microservices.
+
+        7. **Architectural Patterns**: If applicable, showcase any evident architectural patterns, such as client-server models, event-driven architectures, or microservices. Highlight how these patterns influence the structure and interaction of the system’s components.
+
+        8. **System Overview**: Provide a holistic view of the system’s architecture, allowing the viewer to understand the main functions and interactions at a glance. Avoid technical details like file names or code-specific structures unless they are critical to understanding the overall design.
+
+        Make sure to format the output using valid Mermaid syntax, ensuring clarity and readability. Focus on illustrating the **functional and architectural relationships** between components, processes, and data flow, while maintaining an emphasis on how these elements collectively support the system’s overall purpose.
+
+        **Codebase Summary**:
         {combined_summary}
         """
 
         # Call LLM to generate a Mermaid diagram structure
         mermaid_diagram_content = generate_response_with_ollama(llm_mermaid_prompt, model)
 
-        # Generate and save the Mermaid diagram as a PNG
-        generate_mermaid_diagram_from_llm_summary(mermaid_diagram_content, MERMAID_FILE, MERMAID_PNG_FILE)
+        # Save the Mermaid diagram content to a file
+        with open(MERMAID_FILE, 'w') as f:
+            f.write(mermaid_diagram_content)
+
+        # Convert the Mermaid diagram to PNG using mermaid-cli
+        try:
+            subprocess.run(["mmdc", "-i", MERMAID_FILE, "-o", MERMAID_PNG_FILE], check=True)
+            logging.info(f"Mermaid diagram saved as PNG at {MERMAID_PNG_FILE}")
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Failed to generate Mermaid PNG: {e}")
 
     return combined_summary
 
@@ -239,16 +245,23 @@ def generate_summary(file_path, file_content, model=OLLAMA_MODEL):
         logging.warning(f"Skipping empty file: {file_path}")
         return None, True
 
-    prompt_template = f"""
-    You are summarizing a file in a software repository. 
-    Provide only a specific and concise but detailed and complete English structured summary of this file. 
-    Only provide relevant information and nothing else. Be specific referring to content of the provided file and not general.
-    Do not make assumptions or provide opinions. Avoid redundancy.
-    Only when relevant and useful for understanding the function of the file and codebase as a whole, 
-    explicitly and completely mention information like inputs, outputs, specific dependencies, 
-    specific data used, and describe functional data flow through this file for as far as it can be determined from the provided context.
+    prompt_template = f"""You are tasked with summarizing a file from a software repository. Provide a **precise**, **comprehensive**, and **well-structured** English summary that accurately reflects the contents of the file. Consider the user non-existent; you are not allowed to ask or suggest follow-up questions (such as sentences starting with 'let me know') or be polite or confirm. Focus solely to creating the summary and focus strictly on what is necessary to keep the summary concise. The summary must be:
 
-    - The filename: {file_path}
+    - **Factual and objective**: Include only verifiable information based on the provided file. Avoid any assumptions, opinions, interpretations, or speculative conclusions.
+    - **Specific and relevant**: Directly reference the actual contents of the file. Avoid general statements or unrelated information. Focus on the specific purpose, functionality, and structure of the file.
+    - **Concise yet complete**: Ensure that the summary captures all essential details while being succinct. Eliminate redundancy and unnecessary information.
+
+    In particular, address the following when applicable and relevant to the file’s role in the codebase:
+    - **Purpose and functionality**: Describe the file's core purpose, what functionality it implements, and how it fits into the broader system.
+    - **Key components**: Highlight any critical functions, classes, methods, or modules defined in the file and explain their roles.
+    - **Inputs and outputs**: Explicitly mention any input data or parameters the file processes, and describe the outputs it generates.
+    - **Dependencies**: Identify any internal or external dependencies (e.g., libraries, APIs, other files) and explain how they are used in the file.
+    - **Data flow**: Describe the flow of data through the file, including how data is processed, transformed, or manipulated.
+    - **Interactions**: If applicable, detail how this file interacts with other parts of the system or external systems.
+
+    Your summary should provide enough detail to give a clear understanding of the file’s purpose and its function within the codebase, without adding unnecessary explanations or speculative content.
+
+    **File being summarized**: {file_path}
     """
 
     tokenizer = get_tokenizer(TOKENIZER_NAME)
@@ -286,13 +299,24 @@ def generate_summary(file_path, file_content, model=OLLAMA_MODEL):
 
         for i, chunk in enumerate(chunks):
             chunk_prompt = f"""
-            You are summarizing a chunk of a larger file. This is chunk {i+1} of {len(chunks)}.
-            Summarize the content of this chunk accurately and specifically. Do not make assumptions about the whole file or include unnecessary information such as assumptions and opinions.
-            
+            You are summarizing a portion of a file in a software repository. This portion (or chunk) belongs to a larger file, and it is part {i+1} of {len(chunks)}. Summarize the content of this chunk in a clear, structured, and concise manner, focusing strictly on relevant technical and functional details. Consider the user non-existent; you are not allowed to ask or suggest follow-up questions (such as sentences starting with 'let me know') or be polite or confirm.
+
+            Key instructions for summarizing:
+            - **Do not make any assumptions** about other chunks or the overall file context.
+            - **Be factual**, specific, and avoid redundancy.
+            - Only include information that is clearly evident within this chunk, such as:
+            - **Inputs** and **outputs** of functions or components.
+            - **Dependencies** (e.g., external libraries, APIs, or other files).
+            - **Data flow**, how data is transformed or processed within this chunk.
+            - **Key functions, classes, methods**, and their purposes.
+            - Exclude any assumptions, opinions, or evaluations.
+
+            The goal is to accurately capture the functionality and purpose of this specific chunk within the file.
             - The filename: {file_path}
-            Chunk Content:
+            **Chunk content**:
             {chunk}
             """
+
             logging.info(f"Processing chunk {i+1}/{len(chunks)} for file '{file_path}'")
             
             try:
