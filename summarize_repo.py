@@ -33,6 +33,15 @@ def init_cache():
         os.makedirs(CACHE_DIR)
     return shelve.open(os.path.join(CACHE_DIR, 'llm_cache.db'))
 
+# Function to clean and format the final summary
+def clean_generated_summary(summary):
+    # Remove sentences that start with "Let me know"
+    cleaned_summary = "\n".join(
+        [sentence for sentence in summary.split("\n") if not sentence.startswith("Let me know")]
+    )
+    # Remove trailing empty newlines
+    return cleaned_summary.rstrip()
+
 # Generate a unique hash for cache key based on input
 def generate_cache_key(prompt, model):
     key_string = f"{model}_{prompt}"
@@ -105,12 +114,13 @@ def generate_response_with_ollama(prompt, model=OLLAMA_MODEL):
         cache.close()
         raise e  # Re-raise the exception to allow the calling function to handle it.
 
+
 # Function to summarize chunks and save the result
 def summarize_chunk_summaries(chunk_summaries, file_path, model=OLLAMA_MODEL):
     chunk_summary_text = "\n\n".join(chunk_summaries)
 
     prompt = f"""
-    You have summarized a large file in multiple chunks. Now, based on the following individual chunk summaries, create a single cohesive, structured, and factual summary of the entire file.
+    You have summarized a large file in multiple chunks. Now, based on the following individual chunk summaries, create a single cohesive, structured, and factual summary of the entire file. Strictly and only provide the summary. Do not summarize the summary. Do not ask for confirmation. Do not provide suggestions. Do not suggest or ask additional input or follow-up questions. Do not indicate potential uses or interpretations. Do not provide recommendations.
 
     File: {file_path}
 
@@ -120,7 +130,7 @@ def summarize_chunk_summaries(chunk_summaries, file_path, model=OLLAMA_MODEL):
     - Highlight the most significant **functions, classes, modules**, or **methods**, and describe their specific roles in the file.
     - Mention any **dependencies** (e.g., external libraries, APIs) and how they interact with the file.
     - Include key information about **inputs**, **outputs**, and **data flow**.
-    - Avoid any **assumptions**, **opinions**, **irrelevant details** or **asking/suggesting to the user** (such as 'let me know'.. consider the user non-esistent).
+    - Avoid any **assumptions**, **opinions**, **irrelevant details** or **asking/suggesting to the user** (such as 'let me know'.. consider the user non-existent).
     - Ensure the summary is concise yet comprehensive enough to convey the file’s overall functionality.
     
     Here are the chunk summaries:
@@ -128,7 +138,8 @@ def summarize_chunk_summaries(chunk_summaries, file_path, model=OLLAMA_MODEL):
     """
 
     final_summary = generate_response_with_ollama(prompt, model)
-    return final_summary
+    return clean_generated_summary(final_summary)
+
 
 # Function to summarize the entire repository and generate the Mermaid diagram
 def summarize_codebase(directory, model=OLLAMA_MODEL):
@@ -160,7 +171,8 @@ def summarize_codebase(directory, model=OLLAMA_MODEL):
 
             if summary:
                 # Include relative path and filename in the summary for reference
-                formatted_summary = f"File: {file_path}\n\n{summary}\n"
+                cleaned_summary = clean_generated_summary(summary)
+                formatted_summary = f"File: {file_path}\n\n{cleaned_summary}\n"
                 codebase_summary.append(formatted_summary)
                 file_summary_path = generate_unique_filename(
                     os.path.basename(file_path), "summary.txt")
@@ -245,7 +257,7 @@ def generate_summary(file_path, file_content, model=OLLAMA_MODEL):
         logging.warning(f"Skipping empty file: {file_path}")
         return None, True
 
-    prompt_template = f"""You are tasked with summarizing a file from a software repository. Provide a **precise**, **comprehensive**, and **well-structured** English summary that accurately reflects the contents of the file. Consider the user non-existent; you are not allowed to ask or suggest follow-up questions (such as sentences starting with 'let me know') or be polite or confirm. Focus solely to creating the summary and focus strictly on what is necessary to keep the summary concise. The summary must be:
+    prompt_template = f"""You are tasked with summarizing a file from a software repository. Provide a **precise**, **comprehensive**, and **well-structured** English summary that accurately reflects the contents of the file. Do not ask for confirmation. Do not provide suggestions. Do not suggest or ask additional input or follow-up questions. Do not indicate potential uses or interpretations. Do not provide recommendations. Focus solely to creating the summary and focus strictly on what is necessary to keep the summary concise. Avoid redundency and do not summarize the summary. The summary must be:
 
     - **Factual and objective**: Include only verifiable information based on the provided file. Avoid any assumptions, opinions, interpretations, or speculative conclusions.
     - **Specific and relevant**: Directly reference the actual contents of the file. Avoid general statements or unrelated information. Focus on the specific purpose, functionality, and structure of the file.
@@ -299,7 +311,7 @@ def generate_summary(file_path, file_content, model=OLLAMA_MODEL):
 
         for i, chunk in enumerate(chunks):
             chunk_prompt = f"""
-            You are summarizing a portion of a file in a software repository. This portion (or chunk) belongs to a larger file, and it is part {i+1} of {len(chunks)}. Summarize the content of this chunk in a clear, structured, and concise manner, focusing strictly on relevant technical and functional details. Consider the user non-existent; you are not allowed to ask or suggest follow-up questions (such as sentences starting with 'let me know') or be polite or confirm.
+            You are summarizing a portion of a file in a software repository. This portion (or chunk) belongs to a larger file, and it is part {i+1} of {len(chunks)}. Summarize strictly and solely the content of this chunk in a clear, structured, and concise manner, focusing on relevant technical and functional details. You are not allowed to ask or suggest follow-up questions or be polite or confirm. Do not summarize the summary. Do not indicate what is missing. Do not indicate potential uses or interpretations. Do not provide recommendations.
 
             Key instructions for summarizing:
             - **Do not make any assumptions** about other chunks or the overall file context.
@@ -321,9 +333,10 @@ def generate_summary(file_path, file_content, model=OLLAMA_MODEL):
             
             try:
                 chunk_summary = generate_response_with_ollama(chunk_prompt, model)
+                cleaned_chunk_summary = clean_generated_summary(chunk_summary)
                 chunk_filename = generate_unique_filename(f"{os.path.basename(file_path)}_chunk_{i+1}", "txt")
-                save_output_to_file(chunk_summary, os.path.join(SUMMARIES_DIR, chunk_filename))
-                chunk_summaries.append(chunk_summary)
+                save_output_to_file(cleaned_chunk_summary, os.path.join(SUMMARIES_DIR, chunk_filename))
+                chunk_summaries.append(cleaned_chunk_summary)
 
             except Exception as e:
                 logging.error(f"Error processing chunk {i+1}/{len(chunks)} for file '{file_path}': {e}")
