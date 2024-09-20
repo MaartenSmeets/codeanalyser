@@ -6,47 +6,63 @@ import logging
 import traceback
 import chardet
 import shutil
+import json
 import subprocess
+import re
 from hashlib import md5
 from transformers import AutoTokenizer
-from ollama import generate
+import requests
 from datetime import datetime
 from huggingface_hub import login
 
-# Configuration: Default models and context length
+OLLAMA_URL = "http://localhost:11434/api/generate"  # Configurable Ollama URL
 DEFAULT_SUMMARIZATION_MODEL = 'gemma2:9b-instruct-q8_0'
-DEFAULT_PLANTUML_MODEL = 'deepseek-coder-v2:16b-lite-base-fp16'
-DEFAULT_TOKENIZER_NAME = "google/gemma-2-9b-it"
-DEFAULT_PLANTUML_TOKENIZER_NAME = "deepseek-ai/DeepSeek-Coder-V2-Lite-Base"
+DEFAULT_SUMMARIZATION_TOKENIZER_NAME = "google/gemma-2-9b-it"
+MAX_SUMMARIZATION_CONTEXT_LENGTH = 4096  # Maximum token length for summarization model. Model can handle 8K but that is input + output
+
+DEFAULT_PLANTUML_MODEL = 'dolphin-mixtral:8x22b'
+DEFAULT_PLANTUML_TOKENIZER_NAME = "cognitivecomputations/dolphin-2.9-mixtral-8x22b"  # Replace with the appropriate tokenizer for your PlantUML model
+MAX_PLANTUML_CONTEXT_LENGTH = 8192      # Maximum token length for PlantUML model. model can do 16K but that is input + output
+
 CACHE_DIR = 'llm_cache'
-MAX_CONTEXT_LENGTH = 8192  # Maximum token length for a single prompt
 SUMMARIES_DIR = "summaries"
+IRRELEVANT_SUMMARIES_DIR = "irrelevant_summaries"
 UNPROCESSED_DIR = "unprocessed_files"
-PLANTUML_DIR = "plantuml"
 PLANTUML_FILE = "codebase_diagram.puml"
 PLANTUML_PNG_FILE = "codebase_diagram.png"
+PLANTUML_PROMPT_FILE = "plantuml_prompt.txt"
 
-# Authenticate to HuggingFace using the token
-hf_token = "?"
-if hf_token:
-    login(token=hf_token)
-else:
-    logging.error("HuggingFace API token is not set.")
-    exit(1)
+# Default PlantUML prompt template
+DEFAULT_PLANTUML_PROMPT_TEMPLATE = """Based on the following comprehensive codebase summary, generate a valid PlantUML diagram that accurately represents the system's architecture and functional flow. The diagram should be high-level, focusing on the major components, their interactions, and data flow.
+
+Instructions:
+
+- The output should be valid PlantUML code, enclosed within @startuml and @enduml.
+- Use appropriate PlantUML elements such as packages, classes, interfaces, and arrows to represent the components and their relationships.
+- Focus on the architectural and functional relationships between components.
+- Ensure that the syntax is correct and that the diagram can be rendered without errors.
+- Do not include any explanations or descriptions outside of the PlantUML code.
+- Output only the PlantUML code, starting with '@startuml' and ending with '@enduml', with no additional text or explanations before or after.
+
+**Codebase Summary**:
+{combined_summary}
+"""
 
 # Configure logging with timestamps, writing to a log file that is overwritten on each new run
 log_file = 'script_run.log'
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s',
                     handlers=[logging.FileHandler(log_file, mode='w'), logging.StreamHandler()])
 
-# Function to initialize the shelve cache
-def init_cache():
+
+def init_cache() -> shelve.Shelf:
+    """Initialize the shelve cache."""
     if not os.path.exists(CACHE_DIR):
         os.makedirs(CACHE_DIR)
     return shelve.open(os.path.join(CACHE_DIR, 'llm_cache.db'))
 
-# Function to clean and format the final summary
-def clean_generated_summary(summary):
+
+def clean_generated_summary(summary: str) -> str:
+    """Clean and format the final summary."""
     # Remove sentences that start with "Let me know"
     cleaned_summary = "\n".join(
         [sentence for sentence in summary.split("\n") if not sentence.startswith("Let me know")]
@@ -54,19 +70,22 @@ def clean_generated_summary(summary):
     # Remove trailing empty newlines
     return cleaned_summary.rstrip()
 
-# Generate a unique hash for cache key based on input
-def generate_cache_key(prompt, model):
+
+def generate_cache_key(prompt: str, model: str) -> str:
+    """Generate a unique hash for cache key based on input."""
     key_string = f"{model}_{prompt}"
     return md5(key_string.encode()).hexdigest()
 
-# Function to initialize tokenizer based on the model
-def get_tokenizer(tokenizer_name):
+
+def get_tokenizer(tokenizer_name: str):
+    """Initialize tokenizer based on the model."""
     tokenizer = AutoTokenizer.from_pretrained(
         tokenizer_name, trust_remote_code=True)
     return tokenizer
 
-# Function to split text into chunks based on token length
-def split_into_chunks(text, max_tokens, tokenizer):
+
+def split_into_chunks(text: str, max_tokens: int, tokenizer) -> list:
+    """Split text into chunks based on token length."""
     logging.debug(f"Starting tokenization of the text for splitting...")
     tokens = tokenizer(text, return_tensors='pt',
                        add_special_tokens=False).input_ids[0]
@@ -85,14 +104,16 @@ def split_into_chunks(text, max_tokens, tokenizer):
     logging.info(f"File split into {len(chunks)} chunks.")  # Log the number of chunks created
     return chunks
 
-# Helper function to generate unique filenames
-def generate_unique_filename(base_name, extension):
+
+def generate_unique_filename(base_name: str, extension: str) -> str:
+    """Generate a unique filename with timestamp and unique ID."""
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     unique_id = uuid.uuid4().hex[:6]
     return f"{base_name}_{timestamp}_{unique_id}.{extension}"
 
-# Function to call the LLM via Ollama to generate summaries (with caching via shelve)
-def generate_response_with_ollama(prompt, model, tokenizer_name):
+
+def generate_response_with_ollama(prompt: str, model: str) -> str:
+    """Call the LLM via Ollama to generate responses with caching."""
     cache = init_cache()
     cache_key = generate_cache_key(prompt, model)
 
@@ -107,8 +128,31 @@ def generate_response_with_ollama(prompt, model, tokenizer_name):
     try:
         logging.debug(
             f"Sending request to Ollama with model '{model}' and prompt size {len(prompt)}")
-        response_content = generate(
-            model=model, prompt=prompt).get('response', '')
+        url = OLLAMA_URL
+        payload = {
+            "model": model,
+            "prompt": prompt
+        }
+        headers = {'Content-Type': 'application/json'}
+
+        # Send the request
+        response = requests.post(url, data=json.dumps(payload), headers=headers, stream=True)
+
+        if response.status_code != 200:
+            logging.error(f"Failed to generate response with Ollama: HTTP {response.status_code}")
+            return ""
+
+        response_content = ''
+        for line in response.iter_lines():
+            if line:
+                # Each line is a JSON-formatted string
+                try:
+                    line_json = json.loads(line.decode('utf-8'))
+                    response_text = line_json.get('response', '')
+                    response_content += response_text
+                except json.JSONDecodeError as e:
+                    logging.error(f"Failed to parse line as JSON: {e}")
+                    continue
 
         if not response_content:
             logging.warning(f"Unexpected response or no response.")
@@ -119,15 +163,17 @@ def generate_response_with_ollama(prompt, model, tokenizer_name):
         cache.close()
 
         return response_content
+
     except Exception as e:
         logging.error(f"Failed to generate response with Ollama: {e}")
         logging.debug(f"Prompt used: {prompt[:200]}...")
         logging.debug(f"Traceback: {traceback.format_exc()}")
         cache.close()
-        raise e  # Re-raise the exception to allow the calling function to handle it.
+        raise e
 
-# Function to summarize chunks and save the result
-def summarize_chunk_summaries(chunk_summaries, file_path, summarization_model, summarization_tokenizer_name):
+
+def summarize_chunk_summaries(chunk_summaries: list, file_path: str, summarization_model: str, summarization_tokenizer_name: str) -> str:
+    """Summarize chunks and return the result."""
     chunk_summary_text = "\n\n".join(chunk_summaries)
 
     prompt = f"""
@@ -148,25 +194,39 @@ Here are the chunk summaries:
 {chunk_summary_text}
 """
 
-    final_summary = generate_response_with_ollama(prompt, summarization_model, summarization_tokenizer_name)
+    final_summary = generate_response_with_ollama(prompt, summarization_model)
     return clean_generated_summary(final_summary)
 
-# Function to extract PlantUML code from LLM output
-def extract_plantuml_code(content):
-    start_tag = "@startuml"
-    end_tag = "@enduml"
-    start_index = content.find(start_tag)
-    end_index = content.find(end_tag)
-    if start_index != -1 and end_index != -1:
-        # Include the end_tag in the output
-        end_index += len(end_tag)
-        return content[start_index:end_index]
+
+def extract_plantuml_code(content: str) -> str:
+    """Extract PlantUML code from LLM output."""
+    pattern = re.compile(r'@startuml.*?@enduml', re.DOTALL)
+    match = pattern.search(content)
+    if match:
+        return match.group(0)
     else:
         logging.warning("PlantUML tags @startuml and @enduml not found in the LLM output.")
-        return content  # Return content as is if tags not found
+        return content.strip()  # Return content as is if tags not found
 
-# Function to summarize the entire repository and generate the PlantUML diagram
-def summarize_codebase(directory, summarization_model, summarization_tokenizer_name, plantuml_model, plantuml_tokenizer_name):
+
+def evaluate_relevance(summary: str, summarization_model: str) -> bool:
+    """Evaluate if the summary is relevant for generating the diagram."""
+    prompt = f"""
+Based on the following summary, determine whether the file is relevant for generating an architectural diagram of the codebase. If the file is central to the architecture or contains significant components that should be represented in the diagram, respond with 'Yes'. If the file is not relevant, respond with 'No'.
+
+Summary:
+{summary}
+
+Is this file relevant for generating the architectural diagram? Respond with 'Yes' or 'No' only.
+"""
+
+    response = generate_response_with_ollama(prompt, summarization_model)
+    response_cleaned = response.strip().lower()
+    return response_cleaned.startswith('yes')
+
+
+def summarize_codebase(directory: str, summarization_model: str, summarization_tokenizer_name: str, plantuml_model: str, plantuml_tokenizer_name: str, plantuml_context: str = DEFAULT_PLANTUML_PROMPT_TEMPLATE) -> str:
+    """Summarize the entire repository and generate the PlantUML diagram."""
     all_files = list_all_files(directory)
     total_files = len(all_files)
     codebase_summary = []
@@ -174,6 +234,9 @@ def summarize_codebase(directory, summarization_model, summarization_tokenizer_n
 
     if not os.path.exists(SUMMARIES_DIR):
         os.makedirs(SUMMARIES_DIR)
+
+    if not os.path.exists(IRRELEVANT_SUMMARIES_DIR):
+        os.makedirs(IRRELEVANT_SUMMARIES_DIR)
 
     if not os.path.exists(UNPROCESSED_DIR):
         os.makedirs(UNPROCESSED_DIR)
@@ -195,18 +258,29 @@ def summarize_codebase(directory, summarization_model, summarization_tokenizer_n
                 continue
 
             if summary:
+                # Evaluate relevance
+                is_relevant = evaluate_relevance(summary, summarization_model)
+
                 # Include relative path and filename in the summary for reference
                 cleaned_summary = clean_generated_summary(summary)
                 formatted_summary = f"File: {file_path}\n\n{cleaned_summary}\n"
-                codebase_summary.append(formatted_summary)
-                file_summary_path = generate_unique_filename(
-                    os.path.basename(file_path), "summary.txt")
-                save_output_to_file(formatted_summary, os.path.join(
-                    SUMMARIES_DIR, file_summary_path))
+
+                if is_relevant:
+                    codebase_summary.append(formatted_summary)
+                    file_summary_path = generate_unique_filename(
+                        os.path.basename(file_path), "summary.txt")
+                    save_output_to_file(formatted_summary, os.path.join(
+                        SUMMARIES_DIR, file_summary_path))
+                else:
+                    logging.info(f"File '{file_path}' deemed not relevant for the diagram.")
+                    file_summary_path = generate_unique_filename(
+                        os.path.basename(file_path), "summary.txt")
+                    save_output_to_file(formatted_summary, os.path.join(
+                        IRRELEVANT_SUMMARIES_DIR, file_summary_path))
 
             if idx % 5 == 0 or idx == total_files:
                 logging.info(f"Progress: {idx}/{total_files} files processed.")
-        
+
         except Exception as e:
             # Enhanced error logging for more useful debug information
             logging.error(f"Error processing file: {file_path}")
@@ -216,32 +290,40 @@ def summarize_codebase(directory, summarization_model, summarization_tokenizer_n
             # Copy the file to unprocessed_files if it fails
             copy_unreadable_file(file_path, directory, UNPROCESSED_DIR)
 
-    # Combine all file summaries for the PlantUML diagram
+    # Combine all relevant file summaries for the PlantUML diagram
     combined_summary = "\n".join(codebase_summary)
-    
+
     if combined_summary:
         # Save the final codebase summary
         logging.info("Final codebase summary generated.")
         summary_file = generate_unique_filename("codebase_summary", "txt")
         save_output_to_file(combined_summary, summary_file)
 
-        # Ask the LLM to generate the PlantUML diagram from the summary
-        llm_plantuml_prompt = f"""Based on the following comprehensive codebase summary, generate a valid PlantUML diagram that accurately represents the system's architecture and functional flow. The diagram should be high-level, focusing on the major components, their interactions, and data flow.
+        # Generate the PlantUML prompt
+        llm_plantuml_prompt = plantuml_context.format(combined_summary=combined_summary)
 
-Instructions:
+        # Save the PlantUML prompt context to a file for debugging
+        save_output_to_file(llm_plantuml_prompt, PLANTUML_PROMPT_FILE)
 
-- The output should be valid PlantUML code, enclosed within @startuml and @enduml.
-- Use appropriate PlantUML elements such as packages, classes, interfaces, and arrows to represent the components and their relationships.
-- Focus on the architectural and functional relationships between components.
-- Ensure that the syntax is correct and that the diagram can be rendered without errors.
-- Do not include any explanations or descriptions outside of the PlantUML code.
+        logging.info("Generating PlantUML diagram...")
 
-**Codebase Summary**:
-{combined_summary}
-"""
+        # Check if the prompt exceeds the maximum context length
+        plantuml_tokenizer = get_tokenizer(plantuml_tokenizer_name)
+        prompt_token_count = len(
+            plantuml_tokenizer(llm_plantuml_prompt, return_tensors="pt").input_ids[0]
+        )
+
+        if prompt_token_count > MAX_PLANTUML_CONTEXT_LENGTH:
+            logging.warning("PlantUML prompt exceeds maximum context length. Truncating summaries.")
+            # Truncate the combined_summary to fit within MAX_PLANTUML_CONTEXT_LENGTH
+            available_tokens = MAX_PLANTUML_CONTEXT_LENGTH - (prompt_token_count - len(plantuml_tokenizer(combined_summary, return_tensors="pt").input_ids[0]))
+            truncated_summary = truncate_text_to_token_limit(combined_summary, available_tokens, plantuml_tokenizer)
+            llm_plantuml_prompt = plantuml_context.format(combined_summary=truncated_summary)
+            # Save the truncated prompt
+            save_output_to_file(llm_plantuml_prompt, PLANTUML_PROMPT_FILE)
 
         # Call LLM to generate a PlantUML diagram structure
-        plantuml_diagram_content = generate_response_with_ollama(llm_plantuml_prompt, plantuml_model, plantuml_tokenizer_name)
+        plantuml_diagram_content = generate_response_with_ollama(llm_plantuml_prompt, plantuml_model)
 
         # Extract valid PlantUML code from the LLM output
         plantuml_code = extract_plantuml_code(plantuml_diagram_content)
@@ -259,8 +341,20 @@ Instructions:
 
     return combined_summary
 
-# Function to generate a summary for each file
-def generate_summary(file_path, file_content, summarization_model, summarization_tokenizer_name):
+
+def truncate_text_to_token_limit(text: str, max_tokens: int, tokenizer) -> str:
+    """Truncate text to fit within a maximum token limit."""
+    tokens = tokenizer(text, return_tensors='pt',
+                       add_special_tokens=False).input_ids[0]
+    if len(tokens) <= max_tokens:
+        return text
+    truncated_tokens = tokens[:max_tokens]
+    truncated_text = tokenizer.decode(truncated_tokens, skip_special_tokens=True)
+    return truncated_text
+
+
+def generate_summary(file_path: str, file_content: str, summarization_model: str, summarization_tokenizer_name: str) -> tuple:
+    """Generate a summary for each file."""
     _, file_extension = os.path.splitext(file_path)
 
     if is_test_file(file_path):
@@ -291,7 +385,7 @@ Your summary should provide enough detail to give a clear understanding of the f
 """
 
     tokenizer = get_tokenizer(summarization_tokenizer_name)
-    
+
     # Tokenize just the prompt template
     prompt_token_count = len(
         tokenizer(prompt_template, return_tensors="pt").input_ids[0]
@@ -299,7 +393,7 @@ Your summary should provide enough detail to give a clear understanding of the f
 
     logging.debug(f"Prompt token count for file '{file_path}': {prompt_token_count}")
 
-    if prompt_token_count >= MAX_CONTEXT_LENGTH:
+    if prompt_token_count >= MAX_SUMMARIZATION_CONTEXT_LENGTH:
         logging.error(f"Prompt is too long for file '{file_path}' (token count: {prompt_token_count}). Skipping file.")
         return None, True
 
@@ -312,9 +406,9 @@ Your summary should provide enough detail to give a clear understanding of the f
 
     logging.debug(f"Full prompt token count for file '{file_path}': {full_prompt_token_count}")
 
-    if full_prompt_token_count > MAX_CONTEXT_LENGTH:
+    if full_prompt_token_count > MAX_SUMMARIZATION_CONTEXT_LENGTH:
         logging.debug(f"File '{file_path}' exceeds context length; processing in chunks.")
-        available_tokens_for_content = MAX_CONTEXT_LENGTH - prompt_token_count
+        available_tokens_for_content = MAX_SUMMARIZATION_CONTEXT_LENGTH - prompt_token_count
 
         if available_tokens_for_content <= 0:
             logging.error(f"Not enough space for content in the context for file '{file_path}'. Skipping file.")
@@ -345,9 +439,9 @@ The goal is to accurately capture the functionality and purpose of this specific
 """
 
             logging.info(f"Processing chunk {i+1}/{len(chunks)} for file '{file_path}'")
-            
+
             try:
-                chunk_summary = generate_response_with_ollama(chunk_prompt, summarization_model, summarization_tokenizer_name)
+                chunk_summary = generate_response_with_ollama(chunk_prompt, summarization_model)
                 cleaned_chunk_summary = clean_generated_summary(chunk_summary)
                 chunk_filename = generate_unique_filename(f"{os.path.basename(file_path)}_chunk_{i+1}", "txt")
                 save_output_to_file(cleaned_chunk_summary, os.path.join(SUMMARIES_DIR, chunk_filename))
@@ -361,11 +455,12 @@ The goal is to accurately capture the functionality and purpose of this specific
         final_summary = summarize_chunk_summaries(chunk_summaries, file_path, summarization_model, summarization_tokenizer_name)
         return final_summary, False
     else:
-        summary = generate_response_with_ollama(prompt, summarization_model, summarization_tokenizer_name)
+        summary = generate_response_with_ollama(prompt, summarization_model)
         return clean_generated_summary(summary), False
 
-# Function to determine if the file is a test file
-def is_test_file(file_path):
+
+def is_test_file(file_path: str) -> bool:
+    """Determine if the file is a test file."""
     file_path_lower = file_path.lower()
     test_indicators = [
         "src/it",
@@ -394,8 +489,9 @@ def is_test_file(file_path):
 
     return False
 
-# Function to determine if a file is relevant to process
-def is_relevant_file(file_path):
+
+def is_relevant_file(file_path: str) -> bool:
+    """Determine if a file is relevant to process."""
     # Exclude test files
     if is_test_file(file_path):
         return False
@@ -404,7 +500,7 @@ def is_relevant_file(file_path):
         'pom.xml', 'jenkinsfile', 'build.gradle', 'package.json', 'package-lock.json',
         'yarn.lock', 'Makefile', 'Dockerfile', 'README.md', 'LICENSE', 'CONTRIBUTING.md',
         '.gitignore', 'gradlew', 'gradlew.bat', 'mvnw', 'mvnw.cmd', 'setup.py',
-        'requirements.txt', 'environment.yml', 'Pipfile', 'Pipfile.lock', 'Gemfile', 'Gemfile.lock', '.gitlab-ci.yml'
+        'requirements.txt', 'environment.yml', 'Pipfile', 'Pipfile.lock', 'Gemfile', 'Gemfile.lock', '.gitlab-ci.yml', 'renovate.json'
     ]
     if os.path.basename(file_path).lower() in EXCLUDED_FILES:
         return False
@@ -419,8 +515,9 @@ def is_relevant_file(file_path):
         return True
     return False
 
-# Function to copy unreadable files to a new directory while maintaining relative paths
-def copy_unreadable_file(file_path, base_directory, unprocessed_directory):
+
+def copy_unreadable_file(file_path: str, base_directory: str, unprocessed_directory: str):
+    """Copy unreadable files to a new directory while maintaining relative paths."""
     relative_path = os.path.relpath(file_path, base_directory)
     dest_path = os.path.join(unprocessed_directory, relative_path)
 
@@ -428,8 +525,9 @@ def copy_unreadable_file(file_path, base_directory, unprocessed_directory):
     shutil.copy2(file_path, dest_path)
     logging.info(f"Copied unreadable file {file_path} to {dest_path}")
 
-# Function to list all files in the directory
-def list_all_files(directory):
+
+def list_all_files(directory: str) -> list:
+    """List all relevant files in the directory."""
     all_files = []
     for root, dirs, files in os.walk(directory):
         for file in files:
@@ -438,8 +536,9 @@ def list_all_files(directory):
                 all_files.append(file_path)
     return all_files
 
-# Function to read the contents of a file with robust encoding handling
-def read_file(file_path, base_directory, unprocessed_directory):
+
+def read_file(file_path: str, base_directory: str, unprocessed_directory: str) -> str:
+    """Read the contents of a file with robust encoding handling."""
     try:
         with open(file_path, 'rb') as file:
             raw_data = file.read(10000)
@@ -453,20 +552,55 @@ def read_file(file_path, base_directory, unprocessed_directory):
         copy_unreadable_file(file_path, base_directory, unprocessed_directory)
         return ""
 
-# Function to save output to a file
-def save_output_to_file(content, file_name):
+
+def save_output_to_file(content: str, file_name: str):
+    """Save output to a file."""
     with open(file_name, 'w') as f:
         f.write(content)
 
-# Main entry point for summarizing the codebase
+
+def read_hf_token(token_file: str) -> str:
+    """Read HuggingFace token from a file."""
+    try:
+        with open(token_file, 'r') as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        logging.error(f"HuggingFace token file '{token_file}' not found.")
+        exit(1)
+    except Exception as e:
+        logging.error(f"Error reading HuggingFace token file '{token_file}': {e}")
+        exit(1)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Summarize codebase and generate PlantUML diagram.')
     parser.add_argument('--directory', type=str, default='repo', help='Directory of the codebase to summarize.')
     parser.add_argument('--summarization_model', type=str, default=DEFAULT_SUMMARIZATION_MODEL, help='Model to use for summarization.')
     parser.add_argument('--plantuml_model', type=str, default=DEFAULT_PLANTUML_MODEL, help='Model to use for generating the PlantUML diagram.')
-    parser.add_argument('--summarization_tokenizer', type=str, default=DEFAULT_TOKENIZER_NAME, help='Tokenizer for summarization model.')
+    parser.add_argument('--summarization_tokenizer', type=str, default=DEFAULT_SUMMARIZATION_TOKENIZER_NAME, help='Tokenizer for summarization model.')
     parser.add_argument('--plantuml_tokenizer', type=str, default=DEFAULT_PLANTUML_TOKENIZER_NAME, help='Tokenizer for PlantUML model.')
+    parser.add_argument('--hf_token_file', type=str, default='hf_token.txt', help='Path to the HuggingFace token file.')
+    parser.add_argument('--plantuml_context_file', type=str, default=None, help='Path to the file containing the PlantUML context (prompt).')
     args = parser.parse_args()
+
+    # Read HuggingFace token from file
+    hf_token = read_hf_token(args.hf_token_file)
+    if hf_token:
+        login(token=hf_token)
+    else:
+        logging.error("HuggingFace API token is not set.")
+        exit(1)
+
+    # Read PlantUML context from file or use default
+    if args.plantuml_context_file:
+        try:
+            with open(args.plantuml_context_file, 'r') as f:
+                plantuml_context = f.read()
+        except Exception as e:
+            logging.error(f"Error reading PlantUML context file '{args.plantuml_context_file}': {e}")
+            exit(1)
+    else:
+        plantuml_context = DEFAULT_PLANTUML_PROMPT_TEMPLATE
 
     directory = args.directory
     summarization_model = args.summarization_model
@@ -474,7 +608,14 @@ if __name__ == "__main__":
     summarization_tokenizer_name = args.summarization_tokenizer
     plantuml_tokenizer_name = args.plantuml_tokenizer
 
-    codebase_summary = summarize_codebase(directory, summarization_model, summarization_tokenizer_name, plantuml_model, plantuml_tokenizer_name)
+    codebase_summary = summarize_codebase(
+        directory,
+        summarization_model,
+        summarization_tokenizer_name,
+        plantuml_model,
+        plantuml_tokenizer_name,
+        plantuml_context
+    )
 
     if codebase_summary:
         logging.info("Final codebase summary generated.")
