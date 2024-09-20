@@ -127,20 +127,22 @@ Here are the chunk summaries:
 """
 
 EVALUATE_RELEVANCE_PROMPT = """
-Based on the following summary, determine whether the file is relevant for generating an architectural diagram of the codebase. Consider the file relevant if it is central to the system’s architecture, defines key components, or contributes to important functionality. Additionally, consider the file relevant if it includes:
+Based on the following summary, determine whether the file is relevant for generating an architectural diagram of the codebase. When in doubt, consider the file **relevant**. Include any file that could remotely contribute to understanding the architecture, even if its relevance is not immediately obvious.
 
-- **Functional descriptions** of services, components, or modules, especially those that describe how the system operates or interacts with other parts of the architecture.
-- **Data flows**, such as the movement, transformation, or interaction of data between components or systems.
-- **Jobs, tasks, or processes** that are critical to the system’s operations, even if they do not define core architectural components directly.
+A file should be considered relevant if it:
 
-If the file contributes to any of these areas, respond with 'Yes'. Otherwise, respond with 'No'.
+- Is **central to the system's architecture** or defines key components.
+- Provides **functional descriptions** of services, components, modules, or how the system operates and interacts with other parts of the architecture.
+- Describes **data flows**, such as the movement, transformation, or interaction of data between components or systems.
+- Includes **jobs, tasks, or processes** that are important to the system’s operations, even if they are not directly tied to core architectural components.
+
+When unsure, or if there is any possibility the file could aid in representing the system architecture, respond with 'Yes'. 
 
 Summary:
 {summary}
 
 Is this file relevant for generating the architectural diagram? Respond with 'Yes' or 'No' only.
 """
-
 
 # Helper Functions
 def init_cache() -> shelve.Shelf:
