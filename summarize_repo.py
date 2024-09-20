@@ -126,13 +126,21 @@ Here are the chunk summaries:
 {chunk_summaries}
 """
 
-EVALUATE_RELEVANCE_PROMPT = """Based on the following summary, determine whether the file is relevant for generating an architectural diagram of the codebase. If the file is central to the architecture or contains significant components that should be represented in the diagram, respond with 'Yes'. If the file is not relevant, respond with 'No'.
+EVALUATE_RELEVANCE_PROMPT = """
+Based on the following summary, determine whether the file is relevant for generating an architectural diagram of the codebase. Consider the file relevant if it is central to the system’s architecture, defines key components, or contributes to important functionality. Additionally, consider the file relevant if it includes:
+
+- **Functional descriptions** of services, components, or modules, especially those that describe how the system operates or interacts with other parts of the architecture.
+- **Data flows**, such as the movement, transformation, or interaction of data between components or systems.
+- **Jobs, tasks, or processes** that are critical to the system’s operations, even if they do not define core architectural components directly.
+
+If the file contributes to any of these areas, respond with 'Yes'. Otherwise, respond with 'No'.
 
 Summary:
 {summary}
 
 Is this file relevant for generating the architectural diagram? Respond with 'Yes' or 'No' only.
 """
+
 
 # Helper Functions
 def init_cache() -> shelve.Shelf:
@@ -532,7 +540,7 @@ def is_relevant_file(file_path: str) -> bool:
         'pom.xml', 'jenkinsfile', 'build.gradle', 'package.json', 'package-lock.json',
         'yarn.lock', 'Makefile', 'Dockerfile', 'README.md', 'LICENSE', 'CONTRIBUTING.md',
         '.gitignore', 'gradlew', 'gradlew.bat', 'mvnw', 'mvnw.cmd', 'setup.py',
-        'requirements.txt', 'environment.yml', 'Pipfile', 'Pipfile.lock', 'Gemfile', 'Gemfile.lock', '.gitlab-ci.yml', 'renovate.json'
+        'requirements.txt', 'environment.yml', 'Pipfile', 'Pipfile.lock', 'Gemfile', 'Gemfile.lock', '.gitlab-ci.yml', 'renovate.json', 'Dockerfile','docker-compose.yml'
     ]
     if os.path.basename(file_path).lower() in EXCLUDED_FILES:
         return False
