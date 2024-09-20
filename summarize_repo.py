@@ -23,17 +23,17 @@ DEFAULT_SUMMARIZATION_MODEL = 'gemma2:9b-instruct-q8_0'
 DEFAULT_SUMMARIZATION_TOKENIZER_NAME = "google/gemma-2-9b-it"
 MAX_SUMMARIZATION_CONTEXT_LENGTH = 4096  # Max token length for summarization model
 
-DEFAULT_PLANTUML_MODEL = 'dolphin-mixtral:8x22b'
-DEFAULT_PLANTUML_TOKENIZER_NAME = "cognitivecomputations/dolphin-2.9-mixtral-8x22b"
-MAX_PLANTUML_CONTEXT_LENGTH = 8192  # Max token length for PlantUML model
+DEFAULT_GRAPHVIZ_MODEL = 'dolphin-mixtral:8x22b'
+DEFAULT_GRAPHVIZ_TOKENIZER_NAME = "cognitivecomputations/dolphin-2.9-mixtral-8x22b"
+MAX_GRAPHVIZ_CONTEXT_LENGTH = 8192  # Max token length for Graphviz model
 
 CACHE_DIR = 'llm_cache'
 SUMMARIES_DIR = "summaries"
 IRRELEVANT_SUMMARIES_DIR = "irrelevant_summaries"
 UNPROCESSED_DIR = "unprocessed_files"
-PLANTUML_FILE = "codebase_diagram.puml"
-PLANTUML_PNG_FILE = "codebase_diagram.png"
-PLANTUML_PROMPT_FILE = "plantuml_prompt.txt"
+GRAPHVIZ_FILE = "codebase_diagram.dot"
+GRAPHVIZ_PNG_FILE = "codebase_diagram.png"
+GRAPHVIZ_PROMPT_FILE = "graphviz_prompt.txt"
 
 # Logging Configuration
 log_file = 'script_run.log'
@@ -44,21 +44,27 @@ logging.basicConfig(
 )
 
 # Prompt Templates
-DEFAULT_PLANTUML_PROMPT_TEMPLATE = """Based on the following comprehensive codebase summary, generate a valid PlantUML diagram that accurately represents the system's architecture and functional flow. The diagram should be high-level, focusing on the major components, their interactions, and data flow.
+DEFAULT_GRAPHVIZ_PROMPT_TEMPLATE = """Based on the following comprehensive codebase summary, generate a valid and visually appealing Graphviz DOT diagram that accurately represents the system's architecture and functional flow. The diagram should be high-level, focusing on the major components, their interactions, and data flow.
 
 Instructions:
 
-- The output should be valid PlantUML code, enclosed within @startuml and @enduml.
-- Use appropriate PlantUML elements such as packages, classes, interfaces, and arrows to represent the components and their relationships.
-- Focus on the architectural and functional relationships between components.
-- Ensure that the syntax is correct and that the diagram can be rendered without errors.
-- Do not include any explanations or descriptions outside of the PlantUML code.
-- Output only the PlantUML code, starting with '@startuml' and ending with '@enduml', with no additional text or explanations before or after.
+- The output must be valid Graphviz DOT code.
+- Use **clear and descriptive labels** for nodes and edges to improve understanding.
+- **Group related components** using subgraphs or clusters to visually organize the diagram into logical sections.
+- Maintain **consistent node shapes** for similar types of components (e.g., rectangles for services, ellipses for data stores) to enhance readability.
+- Use **rankdir=LR** to make the diagram left-to-right, which typically improves flow and readability for architecture diagrams.
+- Add **colors** to differentiate between different layers or types of components (e.g., blue for services, green for databases, yellow for external systems). Keep the color scheme minimal and professional.
+- Use **edge labels** to describe the nature of data flow or interactions between components.
+- Ensure all components and interactions are well-spaced, using **spacing and ranks** to avoid visual clutter.
+- **Avoid crossing edges** where possible to maintain clarity in the diagram.
+- Ensure the syntax is correct and that the diagram can be rendered without errors.
+- Output only the Graphviz DOT code, without any additional text or explanations.
 
-Remember, your task is to generate a PlantUML diagram based on the provided codebase summary, not to summarize the context.
-
-**Codebase Summary**:
+# Codebase Summary:
 {combined_summary}
+
+# Your task:
+Generate a comprehensive and visually pleasing Graphviz DOT diagram based on the provided codebase summary. The focus should be on producing a clear and aesthetically structured representation of the system's architecture and functional relationships.
 """
 
 FILE_SUMMARY_PROMPT_TEMPLATE = """You are tasked with summarizing a file from a software repository. Provide a **precise**, **comprehensive**, and **well-structured** English summary that accurately reflects the contents of the file. Do not ask for confirmation. Do not provide suggestions or recommendations. Focus solely on creating the summary and keep it concise. Avoid redundancy and do not summarize the summary. The summary must be:
@@ -247,14 +253,15 @@ def summarize_chunk_summaries(chunk_summaries: list, file_path: str, summarizati
     final_summary = generate_response_with_ollama(prompt, summarization_model)
     return clean_generated_summary(final_summary)
 
-def extract_plantuml_code(content: str) -> str:
-    """Extract PlantUML code from LLM output."""
-    pattern = re.compile(r'@startuml.*?@enduml', re.DOTALL)
+def extract_graphviz_code(content: str) -> str:
+    """Extract Graphviz DOT code from LLM output."""
+    # Try to find code between ``` and ```
+    pattern = re.compile(r'```(?:dot)?\n(.*?)```', re.DOTALL)
     match = pattern.search(content)
     if match:
-        return match.group(0)
+        return match.group(1)
     else:
-        logging.warning("PlantUML tags @startuml and @enduml not found in the LLM output.")
+        # If no code blocks found, return the whole content
         return content.strip()
 
 def evaluate_relevance(summary: str, summarization_model: str) -> bool:
@@ -265,8 +272,8 @@ def evaluate_relevance(summary: str, summarization_model: str) -> bool:
     response_cleaned = response.strip().lower()
     return response_cleaned.startswith('yes')
 
-def summarize_codebase(directory: str, summarization_model: str, summarization_tokenizer_name: str, plantuml_model: str, plantuml_tokenizer_name: str, plantuml_context: str = DEFAULT_PLANTUML_PROMPT_TEMPLATE) -> str:
-    """Summarize the entire repository and generate the PlantUML diagram."""
+def summarize_codebase(directory: str, summarization_model: str, summarization_tokenizer_name: str, graphviz_model: str, graphviz_tokenizer_name: str, graphviz_context: str = DEFAULT_GRAPHVIZ_PROMPT_TEMPLATE) -> str:
+    """Summarize the entire repository and generate the Graphviz diagram."""
     all_files = list_all_files(directory)
     total_files = len(all_files)
     codebase_summary = []
@@ -329,7 +336,7 @@ def summarize_codebase(directory: str, summarization_model: str, summarization_t
             # Copy the file to unprocessed_files if it fails
             copy_unreadable_file(file_path, directory, UNPROCESSED_DIR)
 
-    # Combine all relevant file summaries for the PlantUML diagram
+    # Combine all relevant file summaries for the Graphviz diagram
     combined_summary = "\n".join(codebase_summary)
 
     if combined_summary:
@@ -338,32 +345,32 @@ def summarize_codebase(directory: str, summarization_model: str, summarization_t
         summary_file = generate_unique_filename("codebase_summary", "txt")
         save_output_to_file(combined_summary, summary_file)
 
-        # Generate the PlantUML prompt
-        llm_plantuml_prompt = plantuml_context.format(combined_summary=combined_summary)
+        # Generate the Graphviz prompt
+        llm_graphviz_prompt = graphviz_context.format(combined_summary=combined_summary)
 
-        # Save the PlantUML prompt context to a file for debugging
-        save_output_to_file(llm_plantuml_prompt, PLANTUML_PROMPT_FILE)
+        # Save the Graphviz prompt context to a file for debugging
+        save_output_to_file(llm_graphviz_prompt, GRAPHVIZ_PROMPT_FILE)
 
-        logging.info("Preparing to generate PlantUML diagram...")
+        logging.info("Preparing to generate Graphviz diagram...")
 
         # Check if the prompt exceeds the maximum context length
-        plantuml_tokenizer = get_tokenizer(plantuml_tokenizer_name)
+        graphviz_tokenizer = get_tokenizer(graphviz_tokenizer_name)
         prompt_token_count = len(
-            plantuml_tokenizer(llm_plantuml_prompt, return_tensors="pt").input_ids[0]
+            graphviz_tokenizer(llm_graphviz_prompt, return_tensors="pt").input_ids[0]
         )
 
-        if prompt_token_count > MAX_PLANTUML_CONTEXT_LENGTH:
-            logging.warning("PlantUML prompt exceeds maximum context length. Truncating summaries.")
-            # Truncate the combined_summary to fit within MAX_PLANTUML_CONTEXT_LENGTH
-            available_tokens = MAX_PLANTUML_CONTEXT_LENGTH - (prompt_token_count - len(plantuml_tokenizer(combined_summary, return_tensors="pt").input_ids[0]))
-            truncated_summary = truncate_text_to_token_limit(combined_summary, available_tokens, plantuml_tokenizer)
-            llm_plantuml_prompt = plantuml_context.format(combined_summary=truncated_summary)
+        if prompt_token_count > MAX_GRAPHVIZ_CONTEXT_LENGTH:
+            logging.warning("Graphviz prompt exceeds maximum context length. Truncating summaries.")
+            # Truncate the combined_summary to fit within MAX_GRAPHVIZ_CONTEXT_LENGTH
+            available_tokens = MAX_GRAPHVIZ_CONTEXT_LENGTH - (prompt_token_count - len(graphviz_tokenizer(combined_summary, return_tensors="pt").input_ids[0]))
+            truncated_summary = truncate_text_to_token_limit(combined_summary, available_tokens, graphviz_tokenizer)
+            llm_graphviz_prompt = graphviz_context.format(combined_summary=truncated_summary)
             # Save the truncated prompt
-            save_output_to_file(llm_plantuml_prompt, PLANTUML_PROMPT_FILE)
+            save_output_to_file(llm_graphviz_prompt, GRAPHVIZ_PROMPT_FILE)
 
-        logging.info("Restarting Ollama to free up memory before generating PlantUML diagram...")
+        logging.info("Restarting Ollama to free up memory before generating Graphviz diagram...")
 
-        # Restart Ollama to free up memory before generating PlantUML diagram
+        # Restart Ollama to free up memory before generating Graphviz diagram
         try:
             subprocess.call("./restart_ollama.sh", shell=True)
             while True:
@@ -381,24 +388,24 @@ def summarize_codebase(directory: str, summarization_model: str, summarization_t
             logging.error(f"Failed to restart Ollama: {e}")
             return ""
 
-        logging.info("Generating PlantUML diagram...")
+        logging.info("Generating Graphviz diagram...")
 
-        # Call LLM to generate a PlantUML diagram structure
-        plantuml_diagram_content = generate_response_with_ollama(llm_plantuml_prompt, plantuml_model)
+        # Call LLM to generate a Graphviz diagram structure
+        graphviz_diagram_content = generate_response_with_ollama(llm_graphviz_prompt, graphviz_model)
 
-        # Extract valid PlantUML code from the LLM output
-        plantuml_code = extract_plantuml_code(plantuml_diagram_content)
+        # Extract valid Graphviz code from the LLM output
+        graphviz_code = extract_graphviz_code(graphviz_diagram_content)
 
-        # Save the PlantUML diagram content to a file
-        with open(PLANTUML_FILE, 'w') as f:
-            f.write(plantuml_code)
+        # Save the Graphviz diagram content to a file
+        with open(GRAPHVIZ_FILE, 'w') as f:
+            f.write(graphviz_code)
 
-        # Convert the PlantUML diagram to PNG using PlantUML
+        # Convert the Graphviz diagram to PNG using Graphviz
         try:
-            subprocess.run(["plantuml", "-tpng", PLANTUML_FILE], check=True)
-            logging.info(f"PlantUML diagram saved as PNG.")
+            subprocess.run(["dot", "-Tpng", GRAPHVIZ_FILE, "-o", GRAPHVIZ_PNG_FILE], check=True)
+            logging.info(f"Graphviz diagram saved as PNG.")
         except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to generate PlantUML PNG: {e}")
+            logging.error(f"Failed to generate Graphviz PNG: {e}")
 
     return combined_summary
 
@@ -586,14 +593,14 @@ def read_hf_token(token_file: str) -> str:
 
 # Main Execution
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Summarize codebase and generate PlantUML diagram.')
+    parser = argparse.ArgumentParser(description='Summarize codebase and generate Graphviz diagram.')
     parser.add_argument('--directory', type=str, default='repo', help='Directory of the codebase to summarize.')
     parser.add_argument('--summarization_model', type=str, default=DEFAULT_SUMMARIZATION_MODEL, help='Model to use for summarization.')
-    parser.add_argument('--plantuml_model', type=str, default=DEFAULT_PLANTUML_MODEL, help='Model to use for generating the PlantUML diagram.')
+    parser.add_argument('--graphviz_model', type=str, default=DEFAULT_GRAPHVIZ_MODEL, help='Model to use for generating the Graphviz diagram.')
     parser.add_argument('--summarization_tokenizer', type=str, default=DEFAULT_SUMMARIZATION_TOKENIZER_NAME, help='Tokenizer for summarization model.')
-    parser.add_argument('--plantuml_tokenizer', type=str, default=DEFAULT_PLANTUML_TOKENIZER_NAME, help='Tokenizer for PlantUML model.')
+    parser.add_argument('--graphviz_tokenizer', type=str, default=DEFAULT_GRAPHVIZ_TOKENIZER_NAME, help='Tokenizer for Graphviz model.')
     parser.add_argument('--hf_token_file', type=str, default='hf_token.txt', help='Path to the HuggingFace token file.')
-    parser.add_argument('--plantuml_context_file', type=str, default=None, help='Path to the file containing the PlantUML context (prompt).')
+    parser.add_argument('--graphviz_context_file', type=str, default=None, help='Path to the file containing the Graphviz context (prompt).')
     args = parser.parse_args()
 
     # Read HuggingFace token from file
@@ -604,30 +611,30 @@ if __name__ == "__main__":
         logging.error("HuggingFace API token is not set.")
         exit(1)
 
-    # Read PlantUML context from file or use default
-    if args.plantuml_context_file:
+    # Read Graphviz context from file or use default
+    if args.graphviz_context_file:
         try:
-            with open(args.plantuml_context_file, 'r') as f:
-                plantuml_context = f.read()
+            with open(args.graphviz_context_file, 'r') as f:
+                graphviz_context = f.read()
         except Exception as e:
-            logging.error(f"Error reading PlantUML context file '{args.plantuml_context_file}': {e}")
+            logging.error(f"Error reading Graphviz context file '{args.graphviz_context_file}': {e}")
             exit(1)
     else:
-        plantuml_context = DEFAULT_PLANTUML_PROMPT_TEMPLATE
+        graphviz_context = DEFAULT_GRAPHVIZ_PROMPT_TEMPLATE
 
     directory = args.directory
     summarization_model = args.summarization_model
-    plantuml_model = args.plantuml_model
+    graphviz_model = args.graphviz_model
     summarization_tokenizer_name = args.summarization_tokenizer
-    plantuml_tokenizer_name = args.plantuml_tokenizer
+    graphviz_tokenizer_name = args.graphviz_tokenizer
 
     codebase_summary = summarize_codebase(
         directory,
         summarization_model,
         summarization_tokenizer_name,
-        plantuml_model,
-        plantuml_tokenizer_name,
-        plantuml_context
+        graphviz_model,
+        graphviz_tokenizer_name,
+        graphviz_context
     )
 
     if codebase_summary:
