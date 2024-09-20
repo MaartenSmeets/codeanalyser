@@ -17,6 +17,7 @@ from huggingface_hub import login
 DEFAULT_SUMMARIZATION_MODEL = 'gemma2:9b-instruct-q8_0'
 DEFAULT_PLANTUML_MODEL = 'deepseek-coder-v2:16b-lite-base-fp16'
 DEFAULT_TOKENIZER_NAME = "google/gemma-2-9b-it"
+DEFAULT_PLANTUML_TOKENIZER_NAME = "deepseek-ai/DeepSeek-Coder-V2-Lite-Base"
 CACHE_DIR = 'llm_cache'
 MAX_CONTEXT_LENGTH = 8192  # Maximum token length for a single prompt
 SUMMARIES_DIR = "summaries"
@@ -464,7 +465,7 @@ if __name__ == "__main__":
     parser.add_argument('--summarization_model', type=str, default=DEFAULT_SUMMARIZATION_MODEL, help='Model to use for summarization.')
     parser.add_argument('--plantuml_model', type=str, default=DEFAULT_PLANTUML_MODEL, help='Model to use for generating the PlantUML diagram.')
     parser.add_argument('--summarization_tokenizer', type=str, default=DEFAULT_TOKENIZER_NAME, help='Tokenizer for summarization model.')
-    parser.add_argument('--plantuml_tokenizer', type=str, default=DEFAULT_TOKENIZER_NAME, help='Tokenizer for PlantUML model.')
+    parser.add_argument('--plantuml_tokenizer', type=str, default=DEFAULT_PLANTUML_TOKENIZER_NAME, help='Tokenizer for PlantUML model.')
     args = parser.parse_args()
 
     directory = args.directory
