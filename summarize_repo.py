@@ -44,27 +44,30 @@ logging.basicConfig(
 )
 
 # Prompt Templates
-DEFAULT_GRAPHVIZ_PROMPT_TEMPLATE = """Based on the following comprehensive codebase summary, generate a valid and visually appealing Graphviz DOT diagram that accurately represents the system's architecture and functional flow. The diagram should be high-level, focusing on the major components, their interactions, and data flow.
+DEFAULT_GRAPHVIZ_PROMPT_TEMPLATE = """**Objective:**
+Based on the provided detailed codebase summary, generate a **Graphviz DOT diagram** that comprehensively represents the system's architecture, major components, and data flow in a highly detailed yet clear and visually appealing manner. Focus on illustrating the **logical grouping of components**, their **interactions**, and the **data flow** between both internal and external systems.
 
-Instructions:
+**Instructions:**
 
-- The output must be valid Graphviz DOT code.
-- Use **clear and descriptive labels** for nodes and edges to improve understanding.
-- **Group related components** using subgraphs or clusters to visually organize the diagram into logical sections.
-- Maintain **consistent node shapes** for similar types of components (e.g., rectangles for services, ellipses for data stores) to enhance readability.
-- Use **rankdir=LR** to make the diagram left-to-right, which typically improves flow and readability for architecture diagrams.
-- Add **colors** to differentiate between different layers or types of components (e.g., blue for services, green for databases, yellow for external systems). Keep the color scheme minimal and professional.
-- Use **edge labels** to describe the nature of data flow or interactions between components.
-- Ensure all components and interactions are well-spaced, using **spacing and ranks** to avoid visual clutter.
-- **Avoid crossing edges** where possible to maintain clarity in the diagram.
-- Ensure the syntax is correct and that the diagram can be rendered without errors.
-- Output only the Graphviz DOT code, without any additional text or explanations.
+- **Generate valid Graphviz DOT code** that accurately reflects the system architecture.
+- Focus on **major components** and their **functional groupings**, avoiding individual files or micro-level details.
+- Use **clear, descriptive labels** for both nodes and edges to make the diagram intuitive for functional stakeholders.
+- **Organize components into subgraphs** or clusters based on logical relationships (e.g., services, databases, external APIs) to provide a clear and structured view.
+- Maintain **consistent visual patterns** (e.g., rectangles for services, ellipses for databases, diamonds for decision points) to distinguish between types of components.
+- Set `rankdir=LR` to layout the diagram **left-to-right** for enhanced readability and better flow of information.
+- **Apply a minimal color scheme** to differentiate between system layers or types of components (e.g., blue for core services, green for databases, yellow for external systems), keeping the design professional.
+- Use **edge labels** to describe the nature of interactions or data flow between components (e.g., "sends data", "receives response", "queries database").
+- **Minimize crossing edges** and ensure proper spacing to avoid clutter and maintain clarity.
+- Implement **consistent spacing and rank separation** between components to ensure readability, with all key interactions well-represented.
+- Ensure the Graphviz syntax is correct, and the diagram can be rendered without errors.
 
-# Codebase Summary:
-{combined_summary}
+---
 
-# Your task:
-Generate a comprehensive and visually pleasing Graphviz DOT diagram based on the provided codebase summary. The focus should be on producing a clear and aesthetically structured representation of the system's architecture and functional relationships.
+**Input:**  
+- A comprehensive codebase summary in the form: `{combined_summary}`
+
+**Your Task:**  
+Generate a **well-structured and visually appealing** Graphviz DOT diagram that illustrates the system’s architecture and functional data flows based on the provided summary. The output should be valid Graphviz DOT code, with no extra commentary or text beyond the code itself.
 """
 
 FILE_SUMMARY_PROMPT_TEMPLATE = """You are tasked with summarizing a file from a software repository. Provide a **precise**, **comprehensive**, and **well-structured** English summary that accurately reflects the contents of the file. Do not ask for confirmation. Do not provide suggestions or recommendations. Focus solely on creating the summary and keep it concise. Avoid redundancy and do not summarize the summary. The summary must be:
@@ -254,15 +257,19 @@ def summarize_chunk_summaries(chunk_summaries: list, file_path: str, summarizati
     return clean_generated_summary(final_summary)
 
 def extract_graphviz_code(content: str) -> str:
-    """Extract Graphviz DOT code from LLM output."""
-    # Try to find code between ``` and ```
-    pattern = re.compile(r'```(?:dot)?\n(.*?)```', re.DOTALL)
-    match = pattern.search(content)
-    if match:
-        return match.group(1)
-    else:
-        # If no code blocks found, return the whole content
-        return content.strip()
+    """
+    Extract Graphviz DOT code from LLM output.
+    If the content starts and ends with triple backticks, remove them.
+    """
+    # Remove the first and last lines if they contain backticks (```)
+    lines = content.strip().splitlines()
+    
+    # Check for starting and ending backticks, then remove those lines
+    if lines[0].startswith("```") and lines[-1].startswith("```"):
+        lines = lines[1:-1]
+    
+    # Return the cleaned-up content
+    return "\n".join(lines).strip()
 
 def evaluate_relevance(summary: str, summarization_model: str) -> bool:
     """Evaluate if the summary is relevant for generating the diagram."""
