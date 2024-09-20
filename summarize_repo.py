@@ -1,26 +1,37 @@
 import os
 import shelve
 import uuid
-from hashlib import md5
-from transformers import AutoTokenizer
-from ollama import generate
+import argparse
 import logging
-from datetime import datetime
 import traceback
 import chardet
 import shutil
 import subprocess
+from hashlib import md5
+from transformers import AutoTokenizer
+from ollama import generate
+from datetime import datetime
+from huggingface_hub import login
 
-# Configuration: Specify the Ollama model and context length
-OLLAMA_MODEL = 'gemma2:9b-instruct-q8_0'
-TOKENIZER_NAME = "google/gemma-2-9b-it"
+# Configuration: Default models and context length
+DEFAULT_SUMMARIZATION_MODEL = 'gemma2:9b-instruct-q8_0'
+DEFAULT_PLANTUML_MODEL = 'deepseek-coder-v2:16b-lite-base-fp16'
+DEFAULT_TOKENIZER_NAME = "google/gemma-2-9b-it"
 CACHE_DIR = 'llm_cache'
 MAX_CONTEXT_LENGTH = 8192  # Maximum token length for a single prompt
 SUMMARIES_DIR = "summaries"
 UNPROCESSED_DIR = "unprocessed_files"
-MERMAID_DIR = "mermaid"
-MERMAID_FILE = "codebase_diagram.mmd"
-MERMAID_PNG_FILE = "codebase_diagram.png"
+PLANTUML_DIR = "plantuml"
+PLANTUML_FILE = "codebase_diagram.puml"
+PLANTUML_PNG_FILE = "codebase_diagram.png"
+
+# Authenticate to HuggingFace using the token
+hf_token = "?"
+if hf_token:
+    login(token=hf_token)
+else:
+    logging.error("HuggingFace API token is not set.")
+    exit(1)
 
 # Configure logging with timestamps, writing to a log file that is overwritten on each new run
 log_file = 'script_run.log'
@@ -60,7 +71,7 @@ def split_into_chunks(text, max_tokens, tokenizer):
                        add_special_tokens=False).input_ids[0]
 
     logging.debug(f"Total number of tokens: {len(tokens)}")
-    
+
     if len(tokens) == 0:
         logging.error("Tokenization returned no tokens. Skipping chunking.")
         return []
@@ -80,7 +91,7 @@ def generate_unique_filename(base_name, extension):
     return f"{base_name}_{timestamp}_{unique_id}.{extension}"
 
 # Function to call the LLM via Ollama to generate summaries (with caching via shelve)
-def generate_response_with_ollama(prompt, model=OLLAMA_MODEL):
+def generate_response_with_ollama(prompt, model, tokenizer_name):
     cache = init_cache()
     cache_key = generate_cache_key(prompt, model)
 
@@ -114,35 +125,47 @@ def generate_response_with_ollama(prompt, model=OLLAMA_MODEL):
         cache.close()
         raise e  # Re-raise the exception to allow the calling function to handle it.
 
-
 # Function to summarize chunks and save the result
-def summarize_chunk_summaries(chunk_summaries, file_path, model=OLLAMA_MODEL):
+def summarize_chunk_summaries(chunk_summaries, file_path, summarization_model, summarization_tokenizer_name):
     chunk_summary_text = "\n\n".join(chunk_summaries)
 
     prompt = f"""
-    You have summarized a large file in multiple chunks. Now, based on the following individual chunk summaries, create a single cohesive, structured, and factual summary of the entire file. Strictly and only provide the summary. Do not summarize the summary. Do not ask for confirmation. Do not provide suggestions. Do not suggest or ask additional input or follow-up questions. Do not indicate potential uses or interpretations. Do not provide recommendations.
+You have summarized a large file in multiple chunks. Now, based on the following individual chunk summaries, create a single cohesive, structured, and factual summary of the entire file. Strictly and only provide the summary. Do not summarize the summary. Do not ask for confirmation. Do not provide suggestions. Do not suggest or ask additional input or follow-up questions. Do not indicate potential uses or interpretations. Do not provide recommendations.
 
-    File: {file_path}
+File: {file_path}
 
-    Instructions for the final summary:
-    - **Integrate** all the relevant information from the chunk summaries without duplicating content.
-    - Provide a clear **overview of the file's purpose** and its role within the software repository.
-    - Highlight the most significant **functions, classes, modules**, or **methods**, and describe their specific roles in the file.
-    - Mention any **dependencies** (e.g., external libraries, APIs) and how they interact with the file.
-    - Include key information about **inputs**, **outputs**, and **data flow**.
-    - Avoid any **assumptions**, **opinions**, **irrelevant details** or **asking/suggesting to the user** (such as 'let me know'.. consider the user non-existent).
-    - Ensure the summary is concise yet comprehensive enough to convey the file’s overall functionality.
-    
-    Here are the chunk summaries:
-    {chunk_summary_text}
-    """
+Instructions for the final summary:
+- **Integrate** all the relevant information from the chunk summaries without duplicating content.
+- Provide a clear **overview of the file's purpose** and its role within the software repository.
+- Highlight the most significant **functions, classes, modules**, or **methods**, and describe their specific roles in the file.
+- Mention any **dependencies** (e.g., external libraries, APIs) and how they interact with the file.
+- Include key information about **inputs**, **outputs**, and **data flow**.
+- Avoid any **assumptions**, **opinions**, **irrelevant details** or **asking/suggesting to the user** (such as 'let me know'.. consider the user non-existent).
+- Ensure the summary is concise yet comprehensive enough to convey the file’s overall functionality.
 
-    final_summary = generate_response_with_ollama(prompt, model)
+Here are the chunk summaries:
+{chunk_summary_text}
+"""
+
+    final_summary = generate_response_with_ollama(prompt, summarization_model, summarization_tokenizer_name)
     return clean_generated_summary(final_summary)
 
+# Function to extract PlantUML code from LLM output
+def extract_plantuml_code(content):
+    start_tag = "@startuml"
+    end_tag = "@enduml"
+    start_index = content.find(start_tag)
+    end_index = content.find(end_tag)
+    if start_index != -1 and end_index != -1:
+        # Include the end_tag in the output
+        end_index += len(end_tag)
+        return content[start_index:end_index]
+    else:
+        logging.warning("PlantUML tags @startuml and @enduml not found in the LLM output.")
+        return content  # Return content as is if tags not found
 
-# Function to summarize the entire repository and generate the Mermaid diagram
-def summarize_codebase(directory, model=OLLAMA_MODEL):
+# Function to summarize the entire repository and generate the PlantUML diagram
+def summarize_codebase(directory, summarization_model, summarization_tokenizer_name, plantuml_model, plantuml_tokenizer_name):
     all_files = list_all_files(directory)
     total_files = len(all_files)
     codebase_summary = []
@@ -154,6 +177,7 @@ def summarize_codebase(directory, model=OLLAMA_MODEL):
     if not os.path.exists(UNPROCESSED_DIR):
         os.makedirs(UNPROCESSED_DIR)
 
+    # Enhanced error handling to provide better debug information
     for idx, file_path in enumerate(all_files, start=1):
         logging.info(f"Processing file {idx}/{total_files}: {file_path}")
         file_content = read_file(file_path, directory, UNPROCESSED_DIR)
@@ -163,10 +187,10 @@ def summarize_codebase(directory, model=OLLAMA_MODEL):
             continue
 
         try:
-            summary, is_test_file = generate_summary(file_path, file_content, model)
+            summary, is_test_file_flag = generate_summary(file_path, file_content, summarization_model, summarization_tokenizer_name)
 
-            if is_test_file:
-                logging.info(f"Test file detected and skipped: {file_path}")
+            if is_test_file_flag:
+                logging.info(f"Test or irrelevant file detected and skipped: {file_path}")
                 continue
 
             if summary:
@@ -181,12 +205,17 @@ def summarize_codebase(directory, model=OLLAMA_MODEL):
 
             if idx % 5 == 0 or idx == total_files:
                 logging.info(f"Progress: {idx}/{total_files} files processed.")
-        except Exception:
+        
+        except Exception as e:
+            # Enhanced error logging for more useful debug information
             logging.error(f"Error processing file: {file_path}")
+            logging.error(f"Exception details: {str(e)}")
+            logging.error(f"Traceback: {traceback.format_exc()}")
+
             # Copy the file to unprocessed_files if it fails
             copy_unreadable_file(file_path, directory, UNPROCESSED_DIR)
 
-    # Combine all file summaries for the Mermaid diagram
+    # Combine all file summaries for the PlantUML diagram
     combined_summary = "\n".join(codebase_summary)
     
     if combined_summary:
@@ -195,58 +224,42 @@ def summarize_codebase(directory, model=OLLAMA_MODEL):
         summary_file = generate_unique_filename("codebase_summary", "txt")
         save_output_to_file(combined_summary, summary_file)
 
-        # Ask the LLM to generate the Mermaid diagram from the summary
-        llm_mermaid_prompt = f"""Based on the comprehensive summary of the entire codebase below, generate a detailed and insightful Mermaid diagram that focuses on the **overall architecture** and **functional flow** of the system. This diagram should offer a high-level, conceptual view of how the different components and modules work together, emphasizing the architectural design and system functionality rather than the granular details of individual files. Ensure the diagram captures the following key aspects:
+        # Ask the LLM to generate the PlantUML diagram from the summary
+        llm_plantuml_prompt = f"""Based on the following comprehensive codebase summary, generate a valid PlantUML diagram that accurately represents the system's architecture and functional flow. The diagram should be high-level, focusing on the major components, their interactions, and data flow.
 
-        1. **System Architecture**: Clearly represent the high-level architecture of the codebase, including core modules, services, and subsystems. Highlight how these components are organized and how they interact to form the overall system.
-        - Focus on how different parts of the codebase contribute to the main system functionality.
-        - Show the separation of concerns between major system components, subsystems, or layers (e.g., application logic, data access, service integration).
+Instructions:
 
-        2. **Functional Relationships**: Illustrate how the system's core functionalities are distributed across different modules or services. Depict the key functional units, their roles, and how they communicate with each other.
-        - Show how data, control, and execution flow between these units.
-        - Highlight any major processes or workflows that span across multiple components or layers.
+- The output should be valid PlantUML code, enclosed within @startuml and @enduml.
+- Use appropriate PlantUML elements such as packages, classes, interfaces, and arrows to represent the components and their relationships.
+- Focus on the architectural and functional relationships between components.
+- Ensure that the syntax is correct and that the diagram can be rendered without errors.
+- Do not include any explanations or descriptions outside of the PlantUML code.
 
-        3. **Key Interactions and Dependencies**: Show the key interactions between the system’s components and any important dependencies (both internal and external). This includes:
-        - Interactions between major system modules (e.g., service layers, APIs, database access).
-        - External dependencies such as third-party libraries, APIs, or services that are critical to the system’s operation.
+**Codebase Summary**:
+{combined_summary}
+"""
 
-        4. **Data Flow and Processes**: Visualize how data is handled, processed, and transformed across the system. Show the flow of information from inputs to outputs, and any key transformation or decision points.
-        - Focus on critical data processing pathways or pipelines.
-        - Indicate how data is exchanged between subsystems or modules, including key storage and retrieval mechanisms if applicable.
+        # Call LLM to generate a PlantUML diagram structure
+        plantuml_diagram_content = generate_response_with_ollama(llm_plantuml_prompt, plantuml_model, plantuml_tokenizer_name)
 
-        5. **Major Components and Responsibilities**: Highlight the primary components or services within the system, and succinctly represent their responsibilities within the larger architecture.
-        - Identify core system functionalities that are handled by specific components (e.g., data processing, user authentication, communication with external services).
+        # Extract valid PlantUML code from the LLM output
+        plantuml_code = extract_plantuml_code(plantuml_diagram_content)
 
-        6. **Logical Grouping of Components**: Group related components or services into logical clusters that reflect how they function together within the broader architecture. This could include layers (e.g., user interface, business logic, data storage), services, or microservices.
+        # Save the PlantUML diagram content to a file
+        with open(PLANTUML_FILE, 'w') as f:
+            f.write(plantuml_code)
 
-        7. **Architectural Patterns**: If applicable, showcase any evident architectural patterns, such as client-server models, event-driven architectures, or microservices. Highlight how these patterns influence the structure and interaction of the system’s components.
-
-        8. **System Overview**: Provide a holistic view of the system’s architecture, allowing the viewer to understand the main functions and interactions at a glance. Avoid technical details like file names or code-specific structures unless they are critical to understanding the overall design.
-
-        Make sure to format the output using valid Mermaid syntax, ensuring clarity and readability. Focus on illustrating the **functional and architectural relationships** between components, processes, and data flow, while maintaining an emphasis on how these elements collectively support the system’s overall purpose.
-
-        **Codebase Summary**:
-        {combined_summary}
-        """
-
-        # Call LLM to generate a Mermaid diagram structure
-        mermaid_diagram_content = generate_response_with_ollama(llm_mermaid_prompt, model)
-
-        # Save the Mermaid diagram content to a file
-        with open(MERMAID_FILE, 'w') as f:
-            f.write(mermaid_diagram_content)
-
-        # Convert the Mermaid diagram to PNG using mermaid-cli
+        # Convert the PlantUML diagram to PNG using PlantUML
         try:
-            subprocess.run(["mmdc", "-i", MERMAID_FILE, "-o", MERMAID_PNG_FILE], check=True)
-            logging.info(f"Mermaid diagram saved as PNG at {MERMAID_PNG_FILE}")
+            subprocess.run(["plantuml", "-tpng", PLANTUML_FILE], check=True)
+            logging.info(f"PlantUML diagram saved as PNG.")
         except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to generate Mermaid PNG: {e}")
+            logging.error(f"Failed to generate PlantUML PNG: {e}")
 
     return combined_summary
 
 # Function to generate a summary for each file
-def generate_summary(file_path, file_content, model=OLLAMA_MODEL):
+def generate_summary(file_path, file_content, summarization_model, summarization_tokenizer_name):
     _, file_extension = os.path.splitext(file_path)
 
     if is_test_file(file_path):
@@ -257,26 +270,26 @@ def generate_summary(file_path, file_content, model=OLLAMA_MODEL):
         logging.warning(f"Skipping empty file: {file_path}")
         return None, True
 
-    prompt_template = f"""You are tasked with summarizing a file from a software repository. Provide a **precise**, **comprehensive**, and **well-structured** English summary that accurately reflects the contents of the file. Do not ask for confirmation. Do not provide suggestions. Do not suggest or ask additional input or follow-up questions. Do not indicate potential uses or interpretations. Do not provide recommendations. Focus solely to creating the summary and focus strictly on what is necessary to keep the summary concise. Avoid redundency and do not summarize the summary. The summary must be:
+    prompt_template = f"""You are tasked with summarizing a file from a software repository. Provide a **precise**, **comprehensive**, and **well-structured** English summary that accurately reflects the contents of the file. Do not ask for confirmation. Do not provide suggestions or recommendations. Focus solely on creating the summary and keep it concise. Avoid redundancy and do not summarize the summary. The summary must be:
 
-    - **Factual and objective**: Include only verifiable information based on the provided file. Avoid any assumptions, opinions, interpretations, or speculative conclusions.
-    - **Specific and relevant**: Directly reference the actual contents of the file. Avoid general statements or unrelated information. Focus on the specific purpose, functionality, and structure of the file.
-    - **Concise yet complete**: Ensure that the summary captures all essential details while being succinct. Eliminate redundancy and unnecessary information.
+- **Factual and objective**: Include only verifiable information based on the provided file. Avoid any assumptions, opinions, interpretations, or speculative conclusions.
+- **Specific and relevant**: Directly reference the actual contents of the file. Avoid general statements or unrelated information. Focus on the specific purpose, functionality, and structure of the file.
+- **Concise yet complete**: Ensure that the summary captures all essential details while being succinct. Eliminate redundancy and unnecessary information.
 
-    In particular, address the following when applicable and relevant to the file’s role in the codebase:
-    - **Purpose and functionality**: Describe the file's core purpose, what functionality it implements, and how it fits into the broader system.
-    - **Key components**: Highlight any critical functions, classes, methods, or modules defined in the file and explain their roles.
-    - **Inputs and outputs**: Explicitly mention any input data or parameters the file processes, and describe the outputs it generates.
-    - **Dependencies**: Identify any internal or external dependencies (e.g., libraries, APIs, other files) and explain how they are used in the file.
-    - **Data flow**: Describe the flow of data through the file, including how data is processed, transformed, or manipulated.
-    - **Interactions**: If applicable, detail how this file interacts with other parts of the system or external systems.
+In particular, address the following when applicable and relevant to the file’s role in the codebase:
+- **Purpose and functionality**: Describe the file's core purpose, what functionality it implements, and how it fits into the broader system.
+- **Key components**: Highlight any critical functions, classes, methods, or modules defined in the file and explain their roles.
+- **Inputs and outputs**: Explicitly mention any input data or parameters the file processes, and describe the outputs it generates.
+- **Dependencies**: Identify any internal or external dependencies (e.g., libraries, APIs, other files) and explain how they are used in the file.
+- **Data flow**: Describe the flow of data through the file, including how data is processed, transformed, or manipulated.
+- **Interactions**: If applicable, detail how this file interacts with other parts of the system or external systems.
 
-    Your summary should provide enough detail to give a clear understanding of the file’s purpose and its function within the codebase, without adding unnecessary explanations or speculative content.
+Your summary should provide enough detail to give a clear understanding of the file’s purpose and its function within the codebase, without adding unnecessary explanations or speculative content.
 
-    **File being summarized**: {file_path}
-    """
+**File being summarized**: {file_path}
+"""
 
-    tokenizer = get_tokenizer(TOKENIZER_NAME)
+    tokenizer = get_tokenizer(summarization_tokenizer_name)
     
     # Tokenize just the prompt template
     prompt_token_count = len(
@@ -311,28 +324,29 @@ def generate_summary(file_path, file_content, model=OLLAMA_MODEL):
 
         for i, chunk in enumerate(chunks):
             chunk_prompt = f"""
-            You are summarizing a portion of a file in a software repository. This portion (or chunk) belongs to a larger file, and it is part {i+1} of {len(chunks)}. Summarize strictly and solely the content of this chunk in a clear, structured, and concise manner, focusing on relevant technical and functional details. You are not allowed to ask or suggest follow-up questions or be polite or confirm. Do not summarize the summary. Do not indicate what is missing. Do not indicate potential uses or interpretations. Do not provide recommendations.
+You are summarizing a portion of a file in a software repository. This portion belongs to a larger file, and it is part {i+1} of {len(chunks)}. Summarize strictly and solely the content of this chunk in a clear, structured, and concise manner, focusing on relevant technical and functional details. Do not provide recommendations or ask follow-up questions.
 
-            Key instructions for summarizing:
-            - **Do not make any assumptions** about other chunks or the overall file context.
-            - **Be factual**, specific, and avoid redundancy.
-            - Only include information that is clearly evident within this chunk, such as:
-            - **Inputs** and **outputs** of functions or components.
-            - **Dependencies** (e.g., external libraries, APIs, or other files).
-            - **Data flow**, how data is transformed or processed within this chunk.
-            - **Key functions, classes, methods**, and their purposes.
-            - Exclude any assumptions, opinions, or evaluations.
+Key instructions for summarizing:
+- **Do not make any assumptions** about other chunks or the overall file context.
+- **Be factual**, specific, and avoid redundancy.
+- Only include information that is clearly evident within this chunk, such as:
+  - **Inputs** and **outputs** of functions or components.
+  - **Dependencies** (e.g., external libraries, APIs, or other files).
+  - **Data flow**, how data is transformed or processed within this chunk.
+  - **Key functions, classes, methods**, and their purposes.
+- Exclude any assumptions, opinions, or evaluations.
 
-            The goal is to accurately capture the functionality and purpose of this specific chunk within the file.
-            - The filename: {file_path}
-            **Chunk content**:
-            {chunk}
-            """
+The goal is to accurately capture the functionality and purpose of this specific chunk within the file.
+- **Filename**: {file_path}
+
+**Chunk content**:
+{chunk}
+"""
 
             logging.info(f"Processing chunk {i+1}/{len(chunks)} for file '{file_path}'")
             
             try:
-                chunk_summary = generate_response_with_ollama(chunk_prompt, model)
+                chunk_summary = generate_response_with_ollama(chunk_prompt, summarization_model, summarization_tokenizer_name)
                 cleaned_chunk_summary = clean_generated_summary(chunk_summary)
                 chunk_filename = generate_unique_filename(f"{os.path.basename(file_path)}_chunk_{i+1}", "txt")
                 save_output_to_file(cleaned_chunk_summary, os.path.join(SUMMARIES_DIR, chunk_filename))
@@ -343,24 +357,65 @@ def generate_summary(file_path, file_content, model=OLLAMA_MODEL):
                 copy_unreadable_file(file_path, 'repo', UNPROCESSED_DIR)
                 return None, True
 
-        final_summary = summarize_chunk_summaries(chunk_summaries, file_path, model)
+        final_summary = summarize_chunk_summaries(chunk_summaries, file_path, summarization_model, summarization_tokenizer_name)
         return final_summary, False
     else:
-        return generate_response_with_ollama(prompt, model), False
+        summary = generate_response_with_ollama(prompt, summarization_model, summarization_tokenizer_name)
+        return clean_generated_summary(summary), False
 
 # Function to determine if the file is a test file
 def is_test_file(file_path):
     file_path_lower = file_path.lower()
     test_indicators = [
+        "src/it",
+        "src/performance",
+        "src/ct",
         "src/test",
         "test/resources",
         "test/java",
-        "test"
+        "test",
+        "/tests/",
+        "\\tests\\",
+        "/test/",
+        "\\test\\",
+        "test_",
+        "_test",
+        "spec/",
+        "spec\\",
+        "specs/",
+        "specs\\",
+        "/spec/",
+        "\\spec\\",
     ]
     for indicator in test_indicators:
         if indicator in file_path_lower:
             return True
 
+    return False
+
+# Function to determine if a file is relevant to process
+def is_relevant_file(file_path):
+    # Exclude test files
+    if is_test_file(file_path):
+        return False
+    # Exclude specific files
+    EXCLUDED_FILES = [
+        'pom.xml', 'jenkinsfile', 'build.gradle', 'package.json', 'package-lock.json',
+        'yarn.lock', 'Makefile', 'Dockerfile', 'README.md', 'LICENSE', 'CONTRIBUTING.md',
+        '.gitignore', 'gradlew', 'gradlew.bat', 'mvnw', 'mvnw.cmd', 'setup.py',
+        'requirements.txt', 'environment.yml', 'Pipfile', 'Pipfile.lock', 'Gemfile', 'Gemfile.lock', '.gitlab-ci.yml'
+    ]
+    if os.path.basename(file_path).lower() in EXCLUDED_FILES:
+        return False
+    # Include files with relevant extensions
+    RELEVANT_EXTENSIONS = [
+        '.java', '.kt', '.xml', '.yml', '.yaml', '.properties', '.conf', '.sql', '.json',
+        '.js', '.ts', '.tsx', '.jsx', '.py', '.rb', '.go', '.php', '.cs', '.cpp', '.c',
+        '.h', '.swift', '.rs', '.erl', '.ex', '.exs', '.html', '.css'
+    ]
+    _, file_extension = os.path.splitext(file_path)
+    if file_extension.lower() in RELEVANT_EXTENSIONS:
+        return True
     return False
 
 # Function to copy unreadable files to a new directory while maintaining relative paths
@@ -377,7 +432,9 @@ def list_all_files(directory):
     all_files = []
     for root, dirs, files in os.walk(directory):
         for file in files:
-            all_files.append(os.path.join(root, file))
+            file_path = os.path.join(root, file)
+            if is_relevant_file(file_path):
+                all_files.append(file_path)
     return all_files
 
 # Function to read the contents of a file with robust encoding handling
@@ -402,9 +459,21 @@ def save_output_to_file(content, file_name):
 
 # Main entry point for summarizing the codebase
 if __name__ == "__main__":
-    directory = 'repo'
+    parser = argparse.ArgumentParser(description='Summarize codebase and generate PlantUML diagram.')
+    parser.add_argument('--directory', type=str, default='repo', help='Directory of the codebase to summarize.')
+    parser.add_argument('--summarization_model', type=str, default=DEFAULT_SUMMARIZATION_MODEL, help='Model to use for summarization.')
+    parser.add_argument('--plantuml_model', type=str, default=DEFAULT_PLANTUML_MODEL, help='Model to use for generating the PlantUML diagram.')
+    parser.add_argument('--summarization_tokenizer', type=str, default=DEFAULT_TOKENIZER_NAME, help='Tokenizer for summarization model.')
+    parser.add_argument('--plantuml_tokenizer', type=str, default=DEFAULT_TOKENIZER_NAME, help='Tokenizer for PlantUML model.')
+    args = parser.parse_args()
 
-    codebase_summary = summarize_codebase(directory, model=OLLAMA_MODEL)
+    directory = args.directory
+    summarization_model = args.summarization_model
+    plantuml_model = args.plantuml_model
+    summarization_tokenizer_name = args.summarization_tokenizer
+    plantuml_tokenizer_name = args.plantuml_tokenizer
+
+    codebase_summary = summarize_codebase(directory, summarization_model, summarization_tokenizer_name, plantuml_model, plantuml_tokenizer_name)
 
     if codebase_summary:
         logging.info("Final codebase summary generated.")
