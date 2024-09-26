@@ -19,21 +19,23 @@ from huggingface_hub import login
 # Constants and Configuration
 OLLAMA_URL = "http://localhost:11434/api/generate"  # Configurable Ollama URL
 
-DEFAULT_SUMMARIZATION_MODEL = 'gemma2:9b-instruct-q8_0'
-DEFAULT_SUMMARIZATION_TOKENIZER_NAME = "google/gemma-2-9b-it"
-MAX_SUMMARIZATION_CONTEXT_LENGTH = 4096  # Max token length for summarization model
+DEFAULT_SUMMARIZATION_MODEL = 'mixtral:8x7b-instruct-v0.1-q8_0'#'gemma2:9b-instruct-q8_0'#'mixtral:8x7b-instruct-v0.1-q8_0'
+DEFAULT_SUMMARIZATION_TOKENIZER_NAME = "mistralai/Mixtral-8x7B-Instruct-v0.1" #'google/gemma-2-9b-it'#"mistralai/Mixtral-8x7B-Instruct-v0.1"
+MAX_SUMMARIZATION_CONTEXT_LENGTH = 24000  # Max token length for summarization model
 
-DEFAULT_GRAPHVIZ_MODEL = 'dolphin-mixtral:8x22b'
-DEFAULT_GRAPHVIZ_TOKENIZER_NAME = "cognitivecomputations/dolphin-2.9-mixtral-8x22b"
-MAX_GRAPHVIZ_CONTEXT_LENGTH = 8192  # Max token length for Graphviz model
+DEFAULT_MERMAID_MODEL = 'mixtral:8x7b-instruct-v0.1-q8_0'
+DEFAULT_MERMAID_TOKENIZER_NAME = 'mistralai/Mixtral-8x7B-Instruct-v0.1'
+MAX_MERMAID_CONTEXT_LENGTH = 24000  # Max token length for Mermaid model
 
 CACHE_DIR = 'llm_cache'
 SUMMARIES_DIR = "summaries"
 IRRELEVANT_SUMMARIES_DIR = "irrelevant_summaries"
 UNPROCESSED_DIR = "unprocessed_files"
-GRAPHVIZ_FILE = "codebase_diagram.dot"
-GRAPHVIZ_PNG_FILE = "codebase_diagram.png"
-GRAPHVIZ_PROMPT_FILE = "graphviz_prompt.txt"
+MERMAID_FILE = "codebase_diagram.mmd"
+MERMAID_PNG_FILE = "codebase_diagram.png"
+MERMAID_PROMPT_FILE = "mermaid_prompt.txt"
+MERMAID_FIX_PROMPT_DIR = "mermaid_fix_prompts"
+MAX_FIX_RETRIES = 3
 
 # Logging Configuration
 log_file = 'script_run.log'
@@ -44,22 +46,22 @@ logging.basicConfig(
 )
 
 # Prompt Templates
-DEFAULT_GRAPHVIZ_PROMPT_TEMPLATE = """**Objective:**
-Based on the provided detailed codebase summary, generate a **Graphviz DOT diagram** that comprehensively represents the system's architecture, major components, and data flow in a highly detailed yet clear and visually appealing manner. Focus on illustrating the **logical grouping of components**, their **interactions**, and the **data flow** between both internal and external systems.
+DEFAULT_MERMAID_PROMPT_TEMPLATE = """**Objective:**
+Based on the provided detailed codebase summary, generate a **Mermaid diagram** that clearly represents the system's architecture, major components, and data flow in a visually appealing and easy-to-understand manner. Focus on illustrating the **logical grouping of components**, their **interactions**, and the **data flow** between both internal and external systems. Make sure not to use special characters. You are only allowed in names, groupings, edges, nodes, etc to use alphanumeric characters. Also avoid mentioning file extensions and fuction parameters. Avoid mentioning filenames directly and use a functional name instead.
 
 **Instructions:**
 
-- **Generate valid Graphviz DOT code** that accurately reflects the system architecture.
-- Focus on **major components** and their **functional groupings**, avoiding individual files or micro-level details.
-- Use **clear, descriptive labels** for both nodes and edges to make the diagram intuitive for functional stakeholders.
-- **Organize components into subgraphs** or clusters based on logical relationships (e.g., services, databases, external APIs) to provide a clear and structured view.
-- Maintain **consistent visual patterns** (e.g., rectangles for services, ellipses for databases, diamonds for decision points) to distinguish between types of components.
-- Set `rankdir=LR` to layout the diagram **left-to-right** for enhanced readability and better flow of information.
-- **Apply a minimal color scheme** to differentiate between system layers or types of components (e.g., blue for core services, green for databases, yellow for external systems), keeping the design professional.
+- **Generate valid Mermaid code** that accurately reflects the system architecture.
+- Focus on **major components** and their **functional groupings**, avoiding individual files or overly detailed elements.
+- Use **clear, descriptive labels** for both nodes and edges to make the diagram intuitive for stakeholders.
+- **Organize components into subgraphs** or groups based on logical relationships (e.g., services, databases, external APIs) to provide a clear and structured view.
+- Use appropriate **Mermaid diagram types** (e.g., flowcharts, sequence diagrams) that best represent the architecture.
+- Maintain **consistent visual patterns** to distinguish between types of components.
+- Arrange the diagram to **flow from left to right** or **top to bottom** for enhanced readability.
+- **Apply a minimal color scheme** to differentiate between system layers or types of components, keeping the design professional.
 - Use **edge labels** to describe the nature of interactions or data flow between components (e.g., "sends data", "receives response", "queries database").
 - **Minimize crossing edges** and ensure proper spacing to avoid clutter and maintain clarity.
-- Implement **consistent spacing and rank separation** between components to ensure readability, with all key interactions well-represented.
-- Ensure the Graphviz syntax is correct, and the diagram can be rendered without errors.
+- Ensure the Mermaid syntax is correct, and the diagram can be rendered without errors.
 
 ---
 
@@ -67,10 +69,10 @@ Based on the provided detailed codebase summary, generate a **Graphviz DOT diagr
 - A comprehensive codebase summary in the form: `{combined_summary}`
 
 **Your Task:**  
-Generate a **well-structured and visually appealing** Graphviz DOT diagram that illustrates the system’s architecture and functional data flows based on the provided summary. The output should be valid Graphviz DOT code, with no extra commentary or text beyond the code itself.
+Generate a **well-structured and visually appealing** Mermaid diagram that illustrates the system’s architecture and functional data flows based on the provided summary. The output should be valid Mermaid code, with no extra commentary or text beyond the code itself.
 """
 
-FILE_SUMMARY_PROMPT_TEMPLATE = """You are tasked with summarizing a file from a software repository. Provide a **precise**, **comprehensive**, and **well-structured** English summary that accurately reflects the contents of the file. Do not ask for confirmation. Do not provide suggestions or recommendations. Focus solely on creating the summary and keep it concise. Avoid redundancy and do not summarize the summary. The summary must be:
+FILE_SUMMARY_PROMPT_TEMPLATE = """You are tasked with summarizing a file from a software repository. Provide only a **precise**, **comprehensive**, and **well-structured** English summary that accurately reflects the contents of the file. Do not write or update code. Do not generate code to create a summary but create a summary. Do not ask for confirmation. Do not provide suggestions. Do not provide recommendations. Do not mention potential improvements. Do not mention considerations. Focus solely on creating the summary and keep it concise. Avoid redundancy and do not summarize the summary. The summary must be:
 
 - **Factual and objective**: Include only verifiable information based on the provided file. Avoid any assumptions, opinions, interpretations, or speculative conclusions.
 - **Specific and relevant**: Directly reference the actual contents of the file. Avoid general statements or unrelated information. Focus on the specific purpose, functionality, and structure of the file.
@@ -88,6 +90,8 @@ Your summary should provide enough detail to give a clear understanding of the f
 
 **File being summarized**: {file_path}
 {file_content}
+
+Remember you are tasked with creating a detailed summary of the file content only.
 """
 
 CHUNK_SUMMARY_PROMPT_TEMPLATE = """You are summarizing a portion of a file in a software repository. This portion belongs to a larger file, and it is part {chunk_index} of {total_chunks}. Summarize strictly and solely the content of this chunk in a clear, structured, and concise manner, focusing on relevant technical and functional details. Do not provide recommendations or ask follow-up questions.
@@ -109,23 +113,6 @@ The goal is to accurately capture the functionality and purpose of this specific
 {chunk_content}
 """
 
-CHUNK_SUMMARIES_CONSOLIDATION_PROMPT = """You have summarized a large file in multiple chunks. Now, based on the following individual chunk summaries, create a single cohesive, structured, and factual summary of the entire file. Strictly and only provide the summary. Do not summarize the summary. Do not ask for confirmation. Do not provide suggestions. Do not suggest or ask additional input or follow-up questions. Do not indicate potential uses or interpretations. Do not provide recommendations.
-
-File: {file_path}
-
-Instructions for the final summary:
-- **Integrate** all the relevant information from the chunk summaries without duplicating content.
-- Provide a clear **overview of the file's purpose** and its role within the software repository.
-- Highlight the most significant **functions, classes, modules**, or **methods**, and describe their specific roles in the file.
-- Mention any **dependencies** (e.g., external libraries, APIs) and how they interact with the file.
-- Include key information about **inputs**, **outputs**, and **data flow**.
-- Avoid any **assumptions**, **opinions**, **irrelevant details** or **asking/suggesting to the user** (such as 'let me know'.. consider the user non-existent).
-- Ensure the summary is concise yet comprehensive enough to convey the file’s overall functionality.
-
-Here are the chunk summaries:
-{chunk_summaries}
-"""
-
 EVALUATE_RELEVANCE_PROMPT = """
 Based on the following summary, determine whether the file is relevant for generating an architectural diagram of the codebase. When in doubt, consider the file **relevant**. Include any file that could remotely contribute to understanding the architecture, even if its relevance is not immediately obvious.
 
@@ -136,7 +123,7 @@ A file should be considered relevant if it:
 - Describes **data flows**, such as the movement, transformation, or interaction of data between components or systems.
 - Includes **jobs, tasks, or processes** that are important to the system’s operations, even if they are not directly tied to core architectural components.
 
-When unsure, or if there is any possibility the file could aid in representing the system architecture, respond with 'Yes'. 
+When unsure, or if there is any possibility the file could aid in representing the system architecture, respond with 'Yes'.
 
 Summary:
 {summary}
@@ -144,7 +131,58 @@ Summary:
 Is this file relevant for generating the architectural diagram? Respond with 'Yes' or 'No' only.
 """
 
+MERMAID_FIX_PROMPT_TEMPLATE = """You are provided with a Mermaid diagram code that contains syntax errors causing it to fail rendering into a PNG image. Your task is to fix any Mermaid syntax errors without altering the content or meaning of the diagram. Do not change the overall structure or components represented. Often a case of errors is the usage of special characters in names such as spaces dots and quotes. Fix those. For example replace ("This is Text") with ThisIsText and thus removing these special characters.
+
+**Instructions:**
+
+- Carefully examine the provided Mermaid code and the error message.
+- Identify and correct any syntax errors in the Mermaid code.
+- Do not add, remove, or alter the components and relationships in the diagram.
+- Ensure the corrected Mermaid code can be successfully rendered into a PNG image without errors.
+- Provide only the corrected Mermaid code without any additional explanation or comments.
+
+---
+
+**Mermaid Code with Errors:**
+{mermaid_code}
+
+**Error Message:**
+{error_message}
+
+**Your Task:**
+Provide only the corrected Mermaid code below. Do not include any additional text or comments.
+
+"""
+
 # Helper Functions
+def replace_special_statements(text):
+    # Regex pattern for | |, [ ], and { }
+    pattern = r'(\|\s*([^\|]+)\s*\|)|(\[\s*([^\]]+)\s*\])|(\{\s*([^\}]+)\s*\})'
+    
+    # Function to clean up the text within the delimiters and make it alphanumeric
+    def replace_func(match):
+        if match.group(1):  # If the match is within | |
+            content = match.group(2)
+        elif match.group(3):  # If the match is within [ ]
+            content = match.group(4)
+        else:  # If the match is within { }
+            content = match.group(6)
+        
+        # Remove all non-alphanumeric characters (including dots) and capitalize each word
+        cleaned_content = ''.join(word.capitalize() for word in re.findall(r'\w+', content))
+        
+        # Return the new formatted string based on the matched pattern
+        if match.group(1):  # Replace | |
+            return f"|{cleaned_content}|"
+        elif match.group(3):  # Replace [ ]
+            return f"[{cleaned_content}]"
+        else:  # Replace { }
+            return f"{{{cleaned_content}}}"
+    
+    # Substitute all matches in the text
+    return re.sub(pattern, replace_func, text)
+
+
 def init_cache() -> shelve.Shelf:
     """Initialize the shelve cache."""
     if not os.path.exists(CACHE_DIR):
@@ -193,7 +231,8 @@ def generate_unique_filename(base_name: str, extension: str) -> str:
     """Generate a unique filename with timestamp and unique ID."""
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     unique_id = uuid.uuid4().hex[:6]
-    return f"{base_name}_{timestamp}_{unique_id}.{extension}"
+    safe_base_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', base_name)
+    return f"{safe_base_name}_{timestamp}_{unique_id}.{extension}"
 
 def generate_response_with_ollama(prompt: str, model: str) -> str:
     """Call the LLM via Ollama to generate responses with caching."""
@@ -254,31 +293,25 @@ def generate_response_with_ollama(prompt: str, model: str) -> str:
         cache.close()
         raise e
 
-def summarize_chunk_summaries(chunk_summaries: list, file_path: str, summarization_model: str, summarization_tokenizer_name: str) -> str:
-    """Summarize chunks and return the result."""
-    chunk_summary_text = "\n\n".join(chunk_summaries)
-
-    prompt = CHUNK_SUMMARIES_CONSOLIDATION_PROMPT.format(
-        file_path=file_path,
-        chunk_summaries=chunk_summary_text
-    )
-
-    final_summary = generate_response_with_ollama(prompt, summarization_model)
-    return clean_generated_summary(final_summary)
-
-def extract_graphviz_code(content: str) -> str:
+def extract_mermaid_code(content: str) -> str:
     """
-    Extract Graphviz DOT code from LLM output.
-    If the content starts and ends with triple backticks, remove them.
+    Extract Mermaid code from LLM output.
+    If ``` is detected in the last several lines, remove it and all lines after.
     """
-    # Remove the first and last lines if they contain backticks (```)
     lines = content.strip().splitlines()
-    
-    # Check for starting and ending backticks, then remove those lines
-    if lines[0].startswith("```") and lines[-1].startswith("```"):
-        lines = lines[1:-1]
-    
-    # Return the cleaned-up content
+
+    # Remove any ``` and lines after it in the last several lines
+    for i in range(len(lines) - 1, max(-1, len(lines) - 5), -1):
+        if lines[i].strip().startswith("```"):
+            lines = lines[:i]
+            break
+
+    # Remove leading and trailing ``` if present
+    if lines and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+
     return "\n".join(lines).strip()
 
 def evaluate_relevance(summary: str, summarization_model: str) -> bool:
@@ -289,8 +322,8 @@ def evaluate_relevance(summary: str, summarization_model: str) -> bool:
     response_cleaned = response.strip().lower()
     return response_cleaned.startswith('yes')
 
-def summarize_codebase(directory: str, summarization_model: str, summarization_tokenizer_name: str, graphviz_model: str, graphviz_tokenizer_name: str, graphviz_context: str = DEFAULT_GRAPHVIZ_PROMPT_TEMPLATE) -> str:
-    """Summarize the entire repository and generate the Graphviz diagram."""
+def summarize_codebase(directory: str, summarization_model: str, summarization_tokenizer_name: str) -> str:
+    """Summarize the entire repository."""
     all_files = list_all_files(directory)
     total_files = len(all_files)
     codebase_summary = []
@@ -315,7 +348,7 @@ def summarize_codebase(directory: str, summarization_model: str, summarization_t
             continue
 
         try:
-            summary, is_test_file_flag = generate_summary(file_path, file_content, summarization_model, summarization_tokenizer_name)
+            summary, is_test_file_flag, was_chunked = generate_summary(file_path, file_content, summarization_model, summarization_tokenizer_name)
 
             if is_test_file_flag:
                 logging.info(f"Test or irrelevant file detected and skipped: {file_path}")
@@ -327,7 +360,10 @@ def summarize_codebase(directory: str, summarization_model: str, summarization_t
 
                 # Include relative path and filename in the summary for reference
                 cleaned_summary = clean_generated_summary(summary)
-                formatted_summary = f"File: {file_path}\n\n{cleaned_summary}\n"
+                if was_chunked:
+                    formatted_summary = f"File: {file_path}\n(The following summaries were concatenated from multiple chunks)\n\n{cleaned_summary}\n"
+                else:
+                    formatted_summary = f"File: {file_path}\n\n{cleaned_summary}\n"
 
                 if is_relevant:
                     codebase_summary.append(formatted_summary)
@@ -353,7 +389,7 @@ def summarize_codebase(directory: str, summarization_model: str, summarization_t
             # Copy the file to unprocessed_files if it fails
             copy_unreadable_file(file_path, directory, UNPROCESSED_DIR)
 
-    # Combine all relevant file summaries for the Graphviz diagram
+    # Combine all relevant file summaries
     combined_summary = "\n".join(codebase_summary)
 
     if combined_summary:
@@ -361,90 +397,134 @@ def summarize_codebase(directory: str, summarization_model: str, summarization_t
         logging.info("Final codebase summary generated.")
         summary_file = generate_unique_filename("codebase_summary", "txt")
         save_output_to_file(combined_summary, summary_file)
-
-        # Generate the Graphviz prompt
-        llm_graphviz_prompt = graphviz_context.format(combined_summary=combined_summary)
-
-        # Save the Graphviz prompt context to a file for debugging
-        save_output_to_file(llm_graphviz_prompt, GRAPHVIZ_PROMPT_FILE)
-
-        logging.info("Preparing to generate Graphviz diagram...")
-
-        # Check if the prompt exceeds the maximum context length
-        graphviz_tokenizer = get_tokenizer(graphviz_tokenizer_name)
-        prompt_token_count = len(
-            graphviz_tokenizer(llm_graphviz_prompt, return_tensors="pt").input_ids[0]
-        )
-
-        if prompt_token_count > MAX_GRAPHVIZ_CONTEXT_LENGTH:
-            logging.warning("Graphviz prompt exceeds maximum context length. Truncating summaries.")
-            # Truncate the combined_summary to fit within MAX_GRAPHVIZ_CONTEXT_LENGTH
-            available_tokens = MAX_GRAPHVIZ_CONTEXT_LENGTH - (prompt_token_count - len(graphviz_tokenizer(combined_summary, return_tensors="pt").input_ids[0]))
-            truncated_summary = truncate_text_to_token_limit(combined_summary, available_tokens, graphviz_tokenizer)
-            llm_graphviz_prompt = graphviz_context.format(combined_summary=truncated_summary)
-            # Save the truncated prompt
-            save_output_to_file(llm_graphviz_prompt, GRAPHVIZ_PROMPT_FILE)
-
-        logging.info("Restarting Ollama to free up memory before generating Graphviz diagram...")
-
-        # Restart Ollama to free up memory before generating Graphviz diagram
-        try:
-            subprocess.call("./restart_ollama.sh", shell=True)
-            while True:
-                try:
-                    response = requests.get(OLLAMA_URL, timeout=2)  # A short timeout to ensure responsiveness
-                    if response.status_code == 404:
-                        logging.info("Ollama service is up and running.")
-                        break
-                except requests.exceptions.RequestException as e:
-                    logging.info("Ollama service not yet available, retrying...")
-                time.sleep(5)
-            
-            logging.info("Successfully restarted Ollama.")
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to restart Ollama: {e}")
-            return ""
-
-        logging.info("Generating Graphviz diagram...")
-
-        # Call LLM to generate a Graphviz diagram structure
-        graphviz_diagram_content = generate_response_with_ollama(llm_graphviz_prompt, graphviz_model)
-
-        # Extract valid Graphviz code from the LLM output
-        graphviz_code = extract_graphviz_code(graphviz_diagram_content)
-
-        # Save the Graphviz diagram content to a file
-        with open(GRAPHVIZ_FILE, 'w') as f:
-            f.write(graphviz_code)
-
-        # Convert the Graphviz diagram to PNG using Graphviz
-        try:
-            subprocess.run(["dot", "-Tpng", GRAPHVIZ_FILE, "-o", GRAPHVIZ_PNG_FILE], check=True)
-            logging.info(f"Graphviz diagram saved as PNG.")
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Failed to generate Graphviz PNG: {e}")
+    else:
+        logging.warning("No relevant summaries generated.")
 
     return combined_summary
 
-def truncate_text_to_token_limit(text: str, max_tokens: int, tokenizer) -> str:
-    """Truncate text to fit within a maximum token limit."""
-    tokens = tokenizer(text, return_tensors='pt',
-                       add_special_tokens=False).input_ids[0]
-    if len(tokens) <= max_tokens:
-        return text
-    truncated_tokens = tokens[:max_tokens]
-    truncated_text = tokenizer.decode(truncated_tokens, skip_special_tokens=True)
-    return truncated_text
+def generate_mermaid_code(combined_summary: str, mermaid_context: str, mermaid_model: str, mermaid_tokenizer_name: str) -> str:
+    """Generate the Mermaid code based on the combined summary."""
+    # Generate the Mermaid prompt
+    llm_mermaid_prompt = mermaid_context.format(combined_summary=combined_summary)
+
+    # Save the Mermaid prompt context to a file for debugging
+    save_output_to_file(llm_mermaid_prompt, MERMAID_PROMPT_FILE)
+
+    logging.info("Preparing to generate Mermaid diagram...")
+
+    # Check if the prompt exceeds the maximum context length
+    mermaid_tokenizer = get_tokenizer(mermaid_tokenizer_name)
+    prompt_token_count = len(
+        mermaid_tokenizer(llm_mermaid_prompt, return_tensors="pt").input_ids[0]
+    )
+
+    if prompt_token_count > MAX_MERMAID_CONTEXT_LENGTH:
+        logging.error("Mermaid prompt exceeds maximum context length. Cannot generate diagram.")
+        raise ValueError("Mermaid prompt exceeds maximum context length.")
+
+    logging.info("Restarting Ollama to free up memory before generating Mermaid diagram...")
+
+    # Restart Ollama to free up memory before generating Mermaid diagram
+    try:
+        subprocess.call("./restart_ollama.sh", shell=True)
+        while True:
+            try:
+                response = requests.get(OLLAMA_URL, timeout=2)  # A short timeout to ensure responsiveness
+                if response.status_code == 404:
+                    logging.info("Ollama service is up and running.")
+                    break
+            except requests.exceptions.RequestException as e:
+                logging.info("Ollama service not yet available, retrying...")
+            time.sleep(5)
+        
+        logging.info("Successfully restarted Ollama.")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Failed to restart Ollama: {e}")
+        return ""
+
+    logging.info("Generating Mermaid diagram...")
+
+    # Call LLM to generate a Mermaid diagram structure
+    mermaid_diagram_content = generate_response_with_ollama(llm_mermaid_prompt, mermaid_model)
+
+    # Extract valid Mermaid code from the LLM output
+    mermaid_code = extract_mermaid_code(mermaid_diagram_content)
+    mermaid_code = replace_special_statements(mermaid_code)
+
+    return mermaid_code
+
+def process_mermaid_diagram(mermaid_code: str, mermaid_model: str):
+    """Process the Mermaid code and attempt to generate a PNG, fixing errors if necessary."""
+    # Pre-process existing Mermaid file if it exists
+    if os.path.exists(MERMAID_FILE):
+        logging.info(f"{MERMAID_FILE} exists. Pre-processing with replace_special_statements.")
+        # Read existing Mermaid code from the file
+        with open(MERMAID_FILE, 'r') as f:
+            existing_mermaid_code = f.read()
+        
+        # Apply the replace_special_statements function to process the code
+        existing_mermaid_code = replace_special_statements(existing_mermaid_code)
+        
+        # Proceed with further processing on the updated Mermaid code
+        mermaid_code = existing_mermaid_code
+    
+    # Initialize retry counter
+    retry_count = 0
+    success = False
+
+    while retry_count < MAX_FIX_RETRIES and not success:
+        # Save the Mermaid diagram content to a file
+        with open(MERMAID_FILE, 'w') as f:
+            f.write(mermaid_code)
+
+        # Try to convert the Mermaid diagram to PNG using Mermaid CLI
+        try:
+            result = subprocess.run(
+                ["mmdc", "-i", MERMAID_FILE, "-o", MERMAID_PNG_FILE, "-s", "5"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env={"PUPPETEER_EXECUTABLE_PATH": "/usr/bin/chromium"}
+            )
+            logging.info(f"Mermaid diagram saved as PNG.")
+            success = True
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Failed to generate Mermaid PNG: {e}")
+            error_message = e.stderr  # Capture the standard error output
+            logging.debug(f"Standard error from mmdc:\n{error_message}")
+            # Prepare prompt to fix the diagram
+            fix_prompt = MERMAID_FIX_PROMPT_TEMPLATE.format(
+                mermaid_code=mermaid_code,
+                error_message=error_message
+            )
+            # Save the fix prompt to a unique file
+            fix_prompt_file = generate_unique_filename("mermaid_fix_prompt", "txt")
+            fix_prompt_path = os.path.join(MERMAID_FIX_PROMPT_DIR, fix_prompt_file)
+            save_output_to_file(fix_prompt, fix_prompt_path)
+            logging.info(f"Saved Mermaid fix prompt to {fix_prompt_path}")
+
+            # Call LLM to fix the Mermaid diagram
+            logging.info(f"Asking LLM to fix the Mermaid diagram (Attempt {retry_count + 1})...")
+            mermaid_code_fixed = generate_response_with_ollama(fix_prompt, mermaid_model)
+            # Update the mermaid_code with the fixed version
+            mermaid_code = extract_mermaid_code(mermaid_code_fixed)
+            retry_count += 1
+
+    if not success:
+        logging.error("Failed to generate Mermaid diagram after multiple attempts.")
+    else:
+        logging.info("Successfully generated Mermaid diagram after fixing errors.")
+
 
 def generate_summary(file_path: str, file_content: str, summarization_model: str, summarization_tokenizer_name: str) -> tuple:
     """Generate a summary for each file."""
     if is_test_file(file_path):
         logging.info(f"Skipping test file: {file_path}")
-        return None, True
+        return None, True, False
 
     if len(file_content.strip()) == 0:
         logging.warning(f"Skipping empty file: {file_path}")
-        return None, True
+        return None, True, False
 
     tokenizer = get_tokenizer(summarization_tokenizer_name)
 
@@ -469,7 +549,7 @@ def generate_summary(file_path: str, file_content: str, summarization_model: str
 
         if available_tokens_for_content <= 0:
             logging.error(f"Not enough space for content in the context for file '{file_path}'. Skipping file.")
-            return None, True
+            return None, True, False
 
         chunks = split_into_chunks(file_content, available_tokens_for_content, tokenizer)
         chunk_summaries = []
@@ -494,13 +574,13 @@ def generate_summary(file_path: str, file_content: str, summarization_model: str
             except Exception as e:
                 logging.error(f"Error processing chunk {i+1}/{len(chunks)} for file '{file_path}': {e}")
                 copy_unreadable_file(file_path, 'repo', UNPROCESSED_DIR)
-                return None, True
+                return None, True, False
 
-        final_summary = summarize_chunk_summaries(chunk_summaries, file_path, summarization_model, summarization_tokenizer_name)
-        return final_summary, False
+        final_summary = "\n".join(chunk_summaries)
+        return final_summary, False, True
     else:
         summary = generate_response_with_ollama(prompt, summarization_model)
-        return clean_generated_summary(summary), False
+        return clean_generated_summary(summary), False, False
 
 def is_test_file(file_path: str) -> bool:
     """Determine if the file is a test file."""
@@ -610,14 +690,14 @@ def read_hf_token(token_file: str) -> str:
 
 # Main Execution
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Summarize codebase and generate Graphviz diagram.')
+    parser = argparse.ArgumentParser(description='Summarize codebase and generate Mermaid diagram.')
     parser.add_argument('--directory', type=str, default='repo', help='Directory of the codebase to summarize.')
     parser.add_argument('--summarization_model', type=str, default=DEFAULT_SUMMARIZATION_MODEL, help='Model to use for summarization.')
-    parser.add_argument('--graphviz_model', type=str, default=DEFAULT_GRAPHVIZ_MODEL, help='Model to use for generating the Graphviz diagram.')
+    parser.add_argument('--mermaid_model', type=str, default=DEFAULT_MERMAID_MODEL, help='Model to use for generating the Mermaid diagram.')
     parser.add_argument('--summarization_tokenizer', type=str, default=DEFAULT_SUMMARIZATION_TOKENIZER_NAME, help='Tokenizer for summarization model.')
-    parser.add_argument('--graphviz_tokenizer', type=str, default=DEFAULT_GRAPHVIZ_TOKENIZER_NAME, help='Tokenizer for Graphviz model.')
+    parser.add_argument('--mermaid_tokenizer', type=str, default=DEFAULT_MERMAID_TOKENIZER_NAME, help='Tokenizer for Mermaid model.')
     parser.add_argument('--hf_token_file', type=str, default='hf_token.txt', help='Path to the HuggingFace token file.')
-    parser.add_argument('--graphviz_context_file', type=str, default=None, help='Path to the file containing the Graphviz context (prompt).')
+    parser.add_argument('--mermaid_context_file', type=str, default=None, help='Path to the file containing the Mermaid context (prompt).')
     args = parser.parse_args()
 
     # Read HuggingFace token from file
@@ -628,33 +708,48 @@ if __name__ == "__main__":
         logging.error("HuggingFace API token is not set.")
         exit(1)
 
-    # Read Graphviz context from file or use default
-    if args.graphviz_context_file:
+    # Read Mermaid context from file or use default
+    if args.mermaid_context_file:
         try:
-            with open(args.graphviz_context_file, 'r') as f:
-                graphviz_context = f.read()
+            with open(args.mermaid_context_file, 'r') as f:
+                mermaid_context = f.read()
         except Exception as e:
-            logging.error(f"Error reading Graphviz context file '{args.graphviz_context_file}': {e}")
+            logging.error(f"Error reading Mermaid context file '{args.mermaid_context_file}': {e}")
             exit(1)
     else:
-        graphviz_context = DEFAULT_GRAPHVIZ_PROMPT_TEMPLATE
+        mermaid_context = DEFAULT_MERMAID_PROMPT_TEMPLATE
 
     directory = args.directory
     summarization_model = args.summarization_model
-    graphviz_model = args.graphviz_model
+    mermaid_model = args.mermaid_model
     summarization_tokenizer_name = args.summarization_tokenizer
-    graphviz_tokenizer_name = args.graphviz_tokenizer
+    mermaid_tokenizer_name = args.mermaid_tokenizer
 
-    codebase_summary = summarize_codebase(
-        directory,
-        summarization_model,
-        summarization_tokenizer_name,
-        graphviz_model,
-        graphviz_tokenizer_name,
-        graphviz_context
-    )
-
-    if codebase_summary:
-        logging.info("Final codebase summary generated.")
+    # Check if Mermaid file exists
+    if os.path.exists(MERMAID_FILE):
+        logging.info(f"{MERMAID_FILE} exists. Skipping summarization.")
+        # Read mermaid_code from MERMAID_FILE
+        with open(MERMAID_FILE, 'r') as f:
+            mermaid_code = f.read()
+        # Process the Mermaid code
+        process_mermaid_diagram(mermaid_code, mermaid_model)
     else:
-        logging.warning("No files found or summarized.")
+        # Run summarization
+        codebase_summary = summarize_codebase(
+            directory,
+            summarization_model,
+            summarization_tokenizer_name,
+        )
+
+        if codebase_summary:
+            # Generate Mermaid code
+            mermaid_code = generate_mermaid_code(
+                codebase_summary,
+                mermaid_context,
+                mermaid_model,
+                mermaid_tokenizer_name
+            )
+            # Process the Mermaid code
+            process_mermaid_diagram(mermaid_code, mermaid_model)
+        else:
+            logging.warning("No files found or summarized.")
