@@ -19,11 +19,11 @@ from huggingface_hub import login
 # Constants and Configuration
 OLLAMA_URL = "http://localhost:11434/api/generate"  # Configurable Ollama URL
 
-DEFAULT_SUMMARIZATION_MODEL = 'mixtral:8x7b-instruct-v0.1-q8_0'#'gemma2:9b-instruct-q8_0'#'mixtral:8x7b-instruct-v0.1-q8_0'
-DEFAULT_SUMMARIZATION_TOKENIZER_NAME = "mistralai/Mixtral-8x7B-Instruct-v0.1" #'google/gemma-2-9b-it'#"mistralai/Mixtral-8x7B-Instruct-v0.1"
-MAX_SUMMARIZATION_CONTEXT_LENGTH = 24000  # Max token length for summarization model
+DEFAULT_SUMMARIZATION_MODEL = 'gemma2:9b-instruct-q8_0'#'mixtral:8x7b-instruct-v0.1-q8_0'
+DEFAULT_SUMMARIZATION_TOKENIZER_NAME = 'google/gemma-2-9b-it'#"mistralai/Mixtral-8x7B-Instruct-v0.1"
+MAX_SUMMARIZATION_CONTEXT_LENGTH = 7000  # Max token length for summarization model
 
-DEFAULT_MERMAID_MODEL = 'mixtral:8x7b-instruct-v0.1-q8_0'
+DEFAULT_MERMAID_MODEL = 'mixtral:8x7b-instruct-v0.1-q4_K_M'
 DEFAULT_MERMAID_TOKENIZER_NAME = 'mistralai/Mixtral-8x7B-Instruct-v0.1'
 MAX_MERMAID_CONTEXT_LENGTH = 24000  # Max token length for Mermaid model
 
@@ -47,14 +47,20 @@ logging.basicConfig(
 
 # Prompt Templates
 DEFAULT_MERMAID_PROMPT_TEMPLATE = """**Objective:**
-Based on the provided detailed codebase summary, generate a **Mermaid diagram** that clearly represents the system's architecture, major components, and data flow in a visually appealing and easy-to-understand manner. Focus on illustrating the **logical grouping of components**, their **interactions**, and the **data flow** between both internal and external systems. Make sure not to use special characters. You are only allowed in names, groupings, edges, nodes, etc to use alphanumeric characters. Also avoid mentioning file extensions and fuction parameters. Avoid mentioning filenames directly and use a functional name instead.
+Based on the provided detailed codebase summary, generate a **Mermaid diagram** that clearly represents the system's 
+architecture, major components, and data flow in a visually appealing and easy-to-understand manner. Focus on illustrating 
+the **logical grouping of components**, their **interactions**, and the **data flow** between both internal and external 
+systems. Make sure not to use special characters. You are only allowed in names, groupings, edges, nodes, etc to use 
+alphanumeric characters. Also avoid mentioning file extensions and function parameters. Avoid mentioning filenames directly 
+and use a functional name instead.
 
 **Instructions:**
 
 - **Generate valid Mermaid code** that accurately reflects the system architecture.
 - Focus on **major components** and their **functional groupings**, avoiding individual files or overly detailed elements.
 - Use **clear, descriptive labels** for both nodes and edges to make the diagram intuitive for stakeholders.
-- **Organize components into subgraphs** or groups based on logical relationships (e.g., services, databases, external APIs) to provide a clear and structured view.
+- **Organize components into subgraphs** or groups based on logical relationships (e.g., services, databases, external APIs) 
+  to provide a clear and structured view.
 - Use appropriate **Mermaid diagram types** (e.g., flowcharts, sequence diagrams) that best represent the architecture.
 - Maintain **consistent visual patterns** to distinguish between types of components.
 - Arrange the diagram to **flow from left to right** or **top to bottom** for enhanced readability.
@@ -72,13 +78,13 @@ Based on the provided detailed codebase summary, generate a **Mermaid diagram** 
 Generate a **well-structured and visually appealing** Mermaid diagram that illustrates the system’s architecture and functional data flows based on the provided summary. The output should be valid Mermaid code, with no extra commentary or text beyond the code itself.
 """
 
-FILE_SUMMARY_PROMPT_TEMPLATE = """You are tasked with summarizing a file from a software repository. Provide only a **precise**, **comprehensive**, and **well-structured** English summary that accurately reflects the contents of the file. Do not write or update code. Do not generate code to create a summary but create a summary. Do not ask for confirmation. Do not provide suggestions. Do not provide recommendations. Do not mention potential improvements. Do not mention considerations. Focus solely on creating the summary and keep it concise. Avoid redundancy and do not summarize the summary. The summary must be:
+FILE_SUMMARY_PROMPT_TEMPLATE = """You are tasked with summarizing a file from a software repository. Provide only a **precise**, **comprehensive**, and **well-structured** English summary that accurately reflects the contents of the file. Do not write or update code. Do not generate code to create a summary but create a summary. Do not ask for confirmation. Do not provide suggestions. Do not provide recommendations. Do not mention potential improvements. Do not mention considerations. Focus solely on creating the summary. Avoid redundancy and do not summarize the summary. The summary must be:
 
 - **Factual and objective**: Include only verifiable information based on the provided file. Avoid any assumptions, opinions, interpretations, or speculative conclusions.
 - **Specific and relevant**: Directly reference the actual contents of the file. Avoid general statements or unrelated information. Focus on the specific purpose, functionality, and structure of the file.
 - **Concise yet complete**: Ensure that the summary captures all essential details while being succinct. Eliminate redundancy and unnecessary information.
 
-In particular, address the following when applicable and relevant to the file’s role in the codebase:
+In particular, address the following when applicable and relevant to the file’s role in the codebase. When not applicable, leave out the section:
 - **Purpose and functionality**: Describe the file's core purpose, what functionality it implements, and how it fits into the broader system.
 - **Key components**: Highlight any critical functions, classes, methods, or modules defined in the file and explain their roles.
 - **Inputs and outputs**: Explicitly mention any input data or parameters the file processes, and describe the outputs it generates.
@@ -104,13 +110,16 @@ Key instructions for summarizing:
   - **Dependencies** (e.g., external libraries, APIs, or other files).
   - **Data flow**, how data is transformed or processed within this chunk.
   - **Key functions, classes, methods**, and their purposes.
-- Exclude any assumptions, opinions, or evaluations.
+- Exclude any assumptions, opinions, or evaluations and do not provide concluding remarks.
 
-The goal is to accurately capture the functionality and purpose of this specific chunk within the file.
-- **Filename**: {file_path}
+**Filename**: 
+{file_path}
 
 **Chunk content**:
 {chunk_content}
+
+***Your task**
+The goal is to accurately capture the functionality and purpose of this specific chunk within the file.
 """
 
 EVALUATE_RELEVANCE_PROMPT = """
@@ -137,10 +146,9 @@ MERMAID_FIX_PROMPT_TEMPLATE = """You are provided with a Mermaid diagram code th
 
 - Carefully examine the provided Mermaid code and the error message.
 - Identify and correct any syntax errors in the Mermaid code.
-- Do not add, remove, or alter the components and relationships in the diagram.
 - Ensure the corrected Mermaid code can be successfully rendered into a PNG image without errors.
 - Provide only the corrected Mermaid code without any additional explanation or comments.
-
+- Do not enclose the Mermaid code in triple backticks (```) or any other formatting.
 ---
 
 **Mermaid Code with Errors:**
@@ -150,8 +158,7 @@ MERMAID_FIX_PROMPT_TEMPLATE = """You are provided with a Mermaid diagram code th
 {error_message}
 
 **Your Task:**
-Provide only the corrected Mermaid code below. Do not include any additional text or comments.
-
+Provide only the corrected Mermaid code below. Do not include any additional text, comments or final remarks.
 """
 
 # Helper Functions
