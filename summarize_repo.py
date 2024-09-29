@@ -629,7 +629,9 @@ def is_relevant_file(file_path: str) -> bool:
         'pom.xml', 'jenkinsfile', 'build.gradle', 'package.json', 'package-lock.json',
         'yarn.lock', 'Makefile', 'Dockerfile', 'README.md', 'LICENSE', 'CONTRIBUTING.md',
         '.gitignore', 'gradlew', 'gradlew.bat', 'mvnw', 'mvnw.cmd', 'setup.py',
-        'requirements.txt', 'environment.yml', 'Pipfile', 'Pipfile.lock', 'Gemfile', 'Gemfile.lock', '.gitlab-ci.yml', 'renovate.json', 'Dockerfile','docker-compose.yml'
+        'requirements.txt', 'environment.yml', 'Pipfile', 'Pipfile.lock', 'Gemfile', 
+        'Gemfile.lock', '.gitlab-ci.yml', 'renovate.json', 'Dockerfile','docker-compose.yml',
+        'bootstrap.min.css'
     ]
     if os.path.basename(file_path).lower() in EXCLUDED_FILES:
         return False
@@ -637,7 +639,7 @@ def is_relevant_file(file_path: str) -> bool:
     RELEVANT_EXTENSIONS = [
         '.java', '.kt', '.xml', '.yml', '.yaml', '.properties', '.conf', '.sql', '.json',
         '.js', '.ts', '.tsx', '.jsx', '.py', '.rb', '.go', '.php', '.cs', '.cpp', '.c',
-        '.h', '.swift', '.rs', '.erl', '.ex', '.exs', '.html', '.css'
+        '.h', '.swift', '.rs', '.erl', '.ex', '.exs', '.html'
     ]
     _, file_extension = os.path.splitext(file_path)
     if file_extension.lower() in RELEVANT_EXTENSIONS:
