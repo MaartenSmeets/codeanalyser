@@ -14,7 +14,7 @@ from datetime import datetime
 from huggingface_hub import login
 
 # Constants and Configuration
-OLLAMA_URL = "http://localhost:11434/api/generate"  # Configurable Ollama URL
+OLLAMA_URL = "http://kurumi:11434/api/generate"  # Configurable Ollama URL
 
 DEFAULT_SUMMARIZATION_MODEL = 'gemma2:9b-instruct-q8_0'
 DEFAULT_SUMMARIZATION_TOKENIZER_NAME = 'google/gemma-2-9b-it'
@@ -36,7 +36,7 @@ logging.basicConfig(
 
 # Prompt Templates
 DEFAULT_MERMAID_PROMPT_TEMPLATE = """**Objective:**
-Based on the provided detailed codebase summary, generate a **Mermaid diagram** that clearly represents the system's 
+Based on the provided detailed codebase summary, generate a **Mermaid diagram** that clearly rand concisely epresents the system's 
 architecture, major components, and data flow in a visually appealing and easy-to-understand manner. Focus on illustrating 
 the **logical grouping of components**, their **interactions**, and the **data flow** between both internal and external 
 systems. Make sure not to use special characters. You are only allowed in names, groupings, edges, nodes, etc to use 
@@ -46,16 +46,18 @@ and use a functional name instead.
 **Instructions:**
 
 - **Generate valid Mermaid code** that accurately reflects the system architecture.
-- Focus on **major components** and their **functional groupings**. Avoid mentioning individual files and solely technical components (unless they are external dependency). Do not be overly detailed.
+- Focus on **major components** and their **functional groupings**. Avoid mentioning individual files and solely technical components such as DAOs (unless they are an external dependency). Do not be overly detailed.
 - Use **clear, descriptive labels** for both nodes and edges to make the diagram intuitive for stakeholders.
-- **Organize components into subgraphs** or groups based on logical relationships (e.g., services, databases, external APIs) 
-  and use distinct colors in the diagram for logical groups to provide a clear and structured view.
-- Use a flowchart with left to right layout for enhanced readability.
+- **Organize components into subgraphs** or groups based on logical relationships (e.g., services, databases, external APIs) to provide a clear and structured view.
+- Use **distinct colors** in the diagram to differentiate logical groups.
+- Use a flowchart with left to right layout for enhanced readability. Inputs should be on the left and external services/systems which are called should be on the right.
 - Maintain **consistent visual patterns** to distinguish between types of components.
 - **Apply a minimal color scheme** to differentiate between logical groupings, system layers or types of components, keeping the design professional.
 - Use **edge labels** to describe the nature of interactions or data flow between components (e.g., "sends data", "receives response", "queries database").
 - **Minimize crossing edges** and ensure proper spacing to avoid clutter and maintain clarity.
 - Ensure the Mermaid syntax is correct, and the diagram can be rendered without errors.
+- Avoid setting an element to be a parent of itself.
+- Encapsulate all components which are part of the repository supplied code by the name of the code. Place external components/systems inside their own encapsulation (for example systems/components like mailservers, LDAP providers, databases).
 
 ---
 
@@ -86,18 +88,21 @@ Your summary should provide enough detail to give a clear understanding of the f
 {file_content}
 """
 
-CHUNK_SUMMARY_PROMPT_TEMPLATE = """You are summarizing a portion of a file in a software repository. This portion belongs to a larger file, and it is part {chunk_index} of {total_chunks}. Summarize strictly and solely the content of this chunk in a clear, structured, and concise manner, focusing on relevant technical and functional details. Do not provide recommendations or ask follow-up questions.
+CHUNK_SUMMARY_PROMPT_TEMPLATE = """You are summarizing a portion of a file in a software repository. This portion belongs to a larger file, and it is part {chunk_index} of {total_chunks}. Summarize strictly and solely the content of this chunk in a clear, structured, and concise manner, focusing on relevant technical and functional details. Provide only a **precise**, **comprehensive**, and **well-structured** English summary that accurately reflects the contents of this chunk. Do not write or update code. Do not generate code to create a summary but create a summary. Do not ask for confirmation. Do not provide suggestions. Do not provide recommendations. Do not mention potential improvements. Do not mention considerations. Focus solely on creating the summary. Avoid redundancy and do not summarize the summary. The summary must be:
 
-Key instructions for summarizing:
-- **Do not make any assumptions** about other chunks or the overall file context.
-- **Be factual**, specific, and avoid redundancy.
-- Only include information that is clearly evident within this chunk, such as:
-  - **Inputs** and **outputs** of functions or components.
-  - **Dependencies** (e.g., external libraries, APIs, or other files).
-  - **Data flow**, how data is transformed or processed within this chunk.
-  - **Key functions, classes, methods**, and their purposes.
-- Exclude any assumptions, opinions, or evaluations and do not provide concluding remarks.
+- **Factual and objective**: Include only verifiable information based on the provided file. Avoid any assumptions, opinions, interpretations, or speculative conclusions.
+- **Specific and relevant**: Directly reference the actual contents of the file. Avoid general statements or unrelated information. Focus on the specific purpose, functionality, and structure of the file.
+- **Concise yet complete**: Ensure that the summary captures all essential details while being succinct. Eliminate redundancy and unnecessary information.
 
+In particular, address the following when applicable and relevant to the file’s role in the codebase. When not applicable, leave out the section:
+- **Purpose and functionality**: Describe the file's core purpose, what functionality it implements, and how it fits into the broader system.
+- **Key components**: Highlight any critical functions, classes, methods, or modules defined in the file and explain their roles.
+- **Inputs and outputs**: Explicitly mention any input data or parameters the file processes, and describe the outputs it generates.
+- **Dependencies**: Identify any internal or external dependencies (e.g., libraries, APIs, other files) and explain how they are used in the file.
+- **Data flow**: Describe the flow of data through the file, including how data is processed, transformed, or manipulated.
+- **Interactions**: If applicable, detail how this file interacts with other parts of the system or external systems.
+
+Your summary should provide enough detail to give a clear understanding of the chunks purpose and its function within the file and the codebase as a whole, without adding unnecessary explanations or speculative content. Stick to facts.
 **Filename**: 
 {file_path}
 
