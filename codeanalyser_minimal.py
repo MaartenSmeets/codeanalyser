@@ -514,13 +514,33 @@ def is_relevant_file(file_path: str) -> bool:
         return True
     return False
 
+def read_hf_token(token_file: str) -> str:
+    """Read HuggingFace token from a file."""
+    try:
+        with open(token_file, 'r') as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        logging.error(f"HuggingFace token file '{token_file}' not found.")
+        exit(1)
+    except Exception as e:
+        logging.error(f"Error reading HuggingFace token file '{token_file}': {e}")
+        exit(1)
+
 def main():
     # Define constants for the directory and models
     directory = 'repo'
     summarization_model = DEFAULT_SUMMARIZATION_MODEL
     summarization_tokenizer_name = DEFAULT_SUMMARIZATION_TOKENIZER_NAME
     mermaid_context = DEFAULT_MERMAID_PROMPT_TEMPLATE
-
+    
+    # Read HuggingFace token from file
+    hf_token = read_hf_token("hf_token.txt")
+    if hf_token:
+        login(token=hf_token)
+    else:
+        logging.error("HuggingFace API token is not set.")
+        exit(1)
+    
     # Run summarization
     codebase_summary = summarize_codebase(
         directory,
