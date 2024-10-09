@@ -14,7 +14,7 @@ from datetime import datetime
 from huggingface_hub import login
 
 # Constants and Configuration
-OLLAMA_URL = "http://kurumi:11434/api/generate"  # Configurable Ollama URL
+OLLAMA_URL = "http://localhost:11434/api/generate"  # Configurable Ollama URL
 
 DEFAULT_SUMMARIZATION_MODEL = 'gemma2:9b-instruct-q8_0'
 DEFAULT_SUMMARIZATION_TOKENIZER_NAME = 'google/gemma-2-9b-it'
