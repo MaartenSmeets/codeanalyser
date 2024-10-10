@@ -9,22 +9,22 @@ import json
 import requests
 import re
 from hashlib import md5
-from transformers import AutoTokenizer
 from datetime import datetime
-from huggingface_hub import login
 
 # Constants and Configuration
 OLLAMA_URL = "http://localhost:11434/api/generate"  # Configurable Ollama URL
 
 DEFAULT_SUMMARIZATION_MODEL = 'gemma2:9b-instruct-q8_0'
-DEFAULT_SUMMARIZATION_TOKENIZER_NAME = 'google/gemma-2-9b-it'
 MAX_SUMMARIZATION_CONTEXT_LENGTH = 7000
 
 CACHE_DIR = 'llm_cache'
-SUMMARIES_DIR = "summaries"
-IRRELEVANT_SUMMARIES_DIR = "irrelevant_summaries"
-UNPROCESSED_DIR = "unprocessed_files"
-MERMAID_PROMPT_FILE = "mermaid_prompt.txt"
+OUTPUT_DIR = "output"  # Single directory for all generated content
+MERMAID_PROMPT_FILE = os.path.join(OUTPUT_DIR, "mermaid_prompt.txt")
+
+# Subdirectories within OUTPUT_DIR
+SUMMARIES_DIR = os.path.join(OUTPUT_DIR, "summaries")
+IRRELEVANT_SUMMARIES_DIR = os.path.join(OUTPUT_DIR, "irrelevant_summaries")
+UNPROCESSED_DIR = os.path.join(OUTPUT_DIR, "unprocessed_files")
 
 # Logging Configuration
 log_file = 'script_run.log'
@@ -36,23 +36,24 @@ logging.basicConfig(
 
 # Prompt Templates
 DEFAULT_MERMAID_PROMPT_TEMPLATE = """**Objective:**
-Based on the provided detailed codebase summary, generate a **Mermaid diagram** that clearly rand concisely epresents the system's 
+Based on the provided detailed codebase summary, generate a concise professional **Mermaid diagram** that clearly and concisely represents the system's 
 architecture, major components, and data flow in a visually appealing and easy-to-understand manner. Focus on illustrating 
 the **logical grouping of components**, their **interactions**, and the **data flow** between both internal and external 
-systems. Make sure not to use special characters. You are only allowed in names, groupings, edges, nodes, etc to use 
-alphanumeric characters. Also avoid mentioning file extensions and function parameters. Avoid mentioning filenames directly 
-and use a functional name instead.
+systems. Make sure not to use special characters. You are only allowed in names, groupings, edges, nodes, etc., to use 
+alphanumeric characters. Also avoid mentioning file extensions and function parameters. Do not use parentheses. 
+Do not use quotation marks. Avoid mentioning filenames directly and use a functional name instead. Add the user as an entity 
+who interacts with the analysed code. The user should be on the left of the diagram and external dependencies on the right.
 
 **Instructions:**
 
 - **Generate valid Mermaid code** that accurately reflects the system architecture.
-- Focus on **major components** and their **functional groupings**. Avoid mentioning individual files and solely technical components such as DAOs (unless they are an external dependency). Do not be overly detailed.
+- Focus on **major components** and their **functional groupings**. Avoid mentioning individual files and solely technical components such as DAOs and configuration (unless they are an external dependency). Do not be overly detailed but stick to a high level overview.
 - Use **clear, descriptive labels** for both nodes and edges to make the diagram intuitive for stakeholders.
 - **Organize components into subgraphs** or groups based on logical relationships (e.g., services, databases, external APIs) to provide a clear and structured view.
-- Use **distinct colors** in the diagram to differentiate logical groups.
+- Use **distinct but not overly bright colors** in the diagram to differentiate logical groups.
 - Use a flowchart with left to right layout for enhanced readability. Inputs should be on the left and external services/systems which are called should be on the right.
 - Maintain **consistent visual patterns** to distinguish between types of components.
-- **Apply a minimal color scheme** to differentiate between logical groupings, system layers or types of components, keeping the design professional.
+- **Apply a minimal color scheme** to differentiate between logical groupings, system layers, or types of components, keeping the design professional.
 - Use **edge labels** to describe the nature of interactions or data flow between components (e.g., "sends data", "receives response", "queries database").
 - **Minimize crossing edges** and ensure proper spacing to avoid clutter and maintain clarity.
 - Ensure the Mermaid syntax is correct, and the diagram can be rendered without errors.
@@ -102,7 +103,8 @@ In particular, address the following when applicable and relevant to the file’
 - **Data flow**: Describe the flow of data through the file, including how data is processed, transformed, or manipulated.
 - **Interactions**: If applicable, detail how this file interacts with other parts of the system or external systems.
 
-Your summary should provide enough detail to give a clear understanding of the chunks purpose and its function within the file and the codebase as a whole, without adding unnecessary explanations or speculative content. Stick to facts.
+Your summary should provide enough detail to give a clear understanding of the chunk's purpose and its function within the file and the codebase as a whole, without adding unnecessary explanations or speculative content. Stick to facts.
+
 **Filename**: 
 {file_path}
 
@@ -134,7 +136,7 @@ Is this file relevant for generating the architectural diagram? Respond with 'Ye
 # Helper Functions
 def replace_special_statements(text):
     pattern = r'(\|\s*([^\|]+)\s*\|)|(\[\s*([^\]]+)\s*\])|(\{\s*([^\}]+)\s*\})'
-    
+
     def replace_func(match):
         if match.group(1):  # If the match is within | |
             content = match.group(2)
@@ -149,9 +151,9 @@ def replace_special_statements(text):
             return f"|{cleaned_content}|"
         elif match.group(3):  # Replace [ ]
             return f"[{cleaned_content}]"
-        else:  # Replace { }
+        else:  # Replace { }  
             return f"{{{cleaned_content}}}"
-    
+
     return re.sub(pattern, replace_func, text)
 
 def generate_unique_filename(base_name: str, extension: str) -> str:
@@ -172,28 +174,25 @@ def generate_cache_key(prompt: str, model: str) -> str:
     key_string = f"{model}_{prompt}"
     return md5(key_string.encode()).hexdigest()
 
-def get_tokenizer(tokenizer_name: str):
-    """Initialize tokenizer based on the model."""
-    return AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=True)
+def get_token_count(text: str) -> int:
+    """Compute the number of tokens in text, considering each token is 4 characters."""
+    return (len(text) + 3) // 4  # integer division rounding up
 
-def split_into_chunks(text: str, max_tokens: int, tokenizer) -> list:
-    """Split text into chunks based on token length."""
-    logging.debug(f"Starting tokenization of the text for splitting...")
-    tokens = tokenizer(text, return_tensors='pt',
-                       add_special_tokens=False).input_ids[0]
+def split_into_chunks(text: str, max_tokens: int) -> list:
+    """Split text into chunks based on character length."""
+    max_chunk_size = max_tokens * 4  # Each token is 4 characters
+    logging.debug(f"Total text length: {len(text)} characters")
 
-    logging.debug(f"Total number of tokens: {len(tokens)}")
-
-    if len(tokens) == 0:
-        logging.error("Tokenization returned no tokens. Skipping chunking.")
+    if len(text) == 0:
+        logging.error("Text is empty. Skipping chunking.")
         return []
 
     chunks = []
-    for i in range(0, len(tokens), max_tokens):
-        chunk = tokens[i:i + max_tokens]
-        chunks.append(tokenizer.decode(chunk, skip_special_tokens=True))
+    for i in range(0, len(text), max_chunk_size):
+        chunk = text[i:i + max_chunk_size]
+        chunks.append(chunk)
 
-    logging.info(f"File split into {len(chunks)} chunks.")
+    logging.info(f"Text split into {len(chunks)} chunks.")
     return chunks
 
 def generate_response_with_ollama(prompt: str, model: str) -> str:
@@ -269,21 +268,17 @@ def generate_mermaid_code(combined_summary: str, mermaid_context: str) -> str:
     save_output_to_file(llm_mermaid_prompt, MERMAID_PROMPT_FILE)
     return
 
-def summarize_codebase(directory: str, summarization_model: str, summarization_tokenizer_name: str) -> str:
+def summarize_codebase(directory: str, summarization_model: str) -> str:
     """Summarize the entire repository."""
     all_files = list_all_files(directory)
     total_files = len(all_files)
     codebase_summary = []
     logging.info(f"Total files to process: {total_files}")
 
-    if not os.path.exists(SUMMARIES_DIR):
-        os.makedirs(SUMMARIES_DIR)
-
-    if not os.path.exists(IRRELEVANT_SUMMARIES_DIR):
-        os.makedirs(IRRELEVANT_SUMMARIES_DIR)
-
-    if not os.path.exists(UNPROCESSED_DIR):
-        os.makedirs(UNPROCESSED_DIR)
+    # Create OUTPUT_DIR and subdirectories
+    os.makedirs(SUMMARIES_DIR, exist_ok=True)
+    os.makedirs(IRRELEVANT_SUMMARIES_DIR, exist_ok=True)
+    os.makedirs(UNPROCESSED_DIR, exist_ok=True)
 
     for idx, file_path in enumerate(all_files, start=1):
         logging.info(f"Processing file {idx}/{total_files}: {file_path}")
@@ -294,7 +289,7 @@ def summarize_codebase(directory: str, summarization_model: str, summarization_t
             continue
 
         try:
-            summary, is_test_file_flag, was_chunked = generate_summary(file_path, file_content, summarization_model, summarization_tokenizer_name)
+            summary, is_test_file_flag, was_chunked = generate_summary(file_path, file_content, summarization_model)
 
             if is_test_file_flag:
                 logging.info(f"Test or irrelevant file detected and skipped: {file_path}")
@@ -309,14 +304,15 @@ def summarize_codebase(directory: str, summarization_model: str, summarization_t
                 else:
                     formatted_summary = f"File: {file_path}\n\n{cleaned_summary}\n"
 
+                # Generate a safe filename for the summary
+                file_summary_name = re.sub(r'[^a-zA-Z0-9_\-]', '_', os.path.basename(file_path)) + "_summary.txt"
+
                 if is_relevant:
                     codebase_summary.append(formatted_summary)
-                    file_summary_path = generate_unique_filename(os.path.basename(file_path), "summary.txt")
-                    save_output_to_file(formatted_summary, os.path.join(SUMMARIES_DIR, file_summary_path))
+                    save_output_to_file(formatted_summary, os.path.join(SUMMARIES_DIR, file_summary_name))
                 else:
                     logging.info(f"File '{file_path}' deemed not relevant for the diagram.")
-                    file_summary_path = generate_unique_filename(os.path.basename(file_path), "summary.txt")
-                    save_output_to_file(formatted_summary, os.path.join(IRRELEVANT_SUMMARIES_DIR, file_summary_path))
+                    save_output_to_file(formatted_summary, os.path.join(IRRELEVANT_SUMMARIES_DIR, file_summary_name))
 
             if idx % 5 == 0 or idx == total_files:
                 logging.info(f"Progress: {idx}/{total_files} files processed.")
@@ -332,14 +328,14 @@ def summarize_codebase(directory: str, summarization_model: str, summarization_t
 
     if combined_summary:
         logging.info("Final codebase summary generated.")
-        summary_file = generate_unique_filename("codebase_summary", "txt")
+        summary_file = os.path.join(OUTPUT_DIR, "codebase_summary.txt")
         save_output_to_file(combined_summary, summary_file)
     else:
         logging.warning("No relevant summaries generated.")
 
     return combined_summary
 
-def generate_summary(file_path: str, file_content: str, summarization_model: str, summarization_tokenizer_name: str) -> tuple:
+def generate_summary(file_path: str, file_content: str, summarization_model: str) -> tuple:
     """Generate a summary for each file."""
     if is_test_file(file_path):
         logging.info(f"Skipping test file: {file_path}")
@@ -349,24 +345,20 @@ def generate_summary(file_path: str, file_content: str, summarization_model: str
         logging.warning(f"Skipping empty file: {file_path}")
         return None, True, False
 
-    tokenizer = get_tokenizer(summarization_tokenizer_name)
-
     # Prepare the prompt
     prompt = FILE_SUMMARY_PROMPT_TEMPLATE.format(
         file_path=file_path,
         file_content=file_content
     )
 
-    full_prompt_token_count = len(
-        tokenizer(prompt, return_tensors="pt").input_ids[0]
-    )
+    full_prompt_token_count = get_token_count(prompt)
 
     logging.debug(f"Full prompt token count for file '{file_path}': {full_prompt_token_count}")
 
     if full_prompt_token_count > MAX_SUMMARIZATION_CONTEXT_LENGTH:
         logging.debug(f"File '{file_path}' exceeds context length; processing in chunks.")
-        prompt_token_count = len(
-            tokenizer(FILE_SUMMARY_PROMPT_TEMPLATE.format(file_path=file_path, file_content=""), return_tensors="pt").input_ids[0]
+        prompt_token_count = get_token_count(
+            FILE_SUMMARY_PROMPT_TEMPLATE.format(file_path=file_path, file_content="")
         )
         available_tokens_for_content = MAX_SUMMARIZATION_CONTEXT_LENGTH - prompt_token_count
 
@@ -374,7 +366,8 @@ def generate_summary(file_path: str, file_content: str, summarization_model: str
             logging.error(f"Not enough space for content in the context for file '{file_path}'. Skipping file.")
             return None, True, False
 
-        chunks = split_into_chunks(file_content, available_tokens_for_content, tokenizer)
+        chunks = split_into_chunks(file_content, available_tokens_for_content)
+
         chunk_summaries = []
 
         for i, chunk in enumerate(chunks):
@@ -390,7 +383,7 @@ def generate_summary(file_path: str, file_content: str, summarization_model: str
             try:
                 chunk_summary = generate_response_with_ollama(chunk_prompt, summarization_model)
                 cleaned_chunk_summary = clean_generated_summary(chunk_summary)
-                chunk_filename = generate_unique_filename(f"{os.path.basename(file_path)}_chunk_{i+1}", "txt")
+                chunk_filename = f"{os.path.basename(file_path)}_chunk_{i+1}.txt"
                 save_output_to_file(cleaned_chunk_summary, os.path.join(SUMMARIES_DIR, chunk_filename))
                 chunk_summaries.append(cleaned_chunk_summary)
 
@@ -436,7 +429,8 @@ def read_file(file_path: str, base_directory: str, unprocessed_directory: str) -
 
 def save_output_to_file(content: str, file_name: str):
     """Save output to a file."""
-    with open(file_name, 'w') as f:
+    os.makedirs(os.path.dirname(file_name), exist_ok=True)
+    with open(file_name, 'w', encoding='utf-8') as f:
         f.write(content)
 
 def list_all_files(directory: str) -> list:
@@ -498,7 +492,7 @@ def is_relevant_file(file_path: str) -> bool:
         'yarn.lock', 'Makefile', 'Dockerfile', 'README.md', 'LICENSE', 'CONTRIBUTING.md',
         '.gitignore', 'gradlew', 'gradlew.bat', 'mvnw', 'mvnw.cmd', 'setup.py',
         'requirements.txt', 'environment.yml', 'Pipfile', 'Pipfile.lock', 'Gemfile', 
-        'Gemfile.lock', '.gitlab-ci.yml', 'renovate.json', 'Dockerfile','docker-compose.yml',
+        'Gemfile.lock', '.gitlab-ci.yml', 'renovate.json', 'Dockerfile', 'docker-compose.yml',
         'bootstrap.min.css'
     ]
     if os.path.basename(file_path).lower() in EXCLUDED_FILES:
@@ -514,38 +508,16 @@ def is_relevant_file(file_path: str) -> bool:
         return True
     return False
 
-def read_hf_token(token_file: str) -> str:
-    """Read HuggingFace token from a file."""
-    try:
-        with open(token_file, 'r') as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        logging.error(f"HuggingFace token file '{token_file}' not found.")
-        exit(1)
-    except Exception as e:
-        logging.error(f"Error reading HuggingFace token file '{token_file}': {e}")
-        exit(1)
-
 def main():
     # Define constants for the directory and models
     directory = 'repo'
     summarization_model = DEFAULT_SUMMARIZATION_MODEL
-    summarization_tokenizer_name = DEFAULT_SUMMARIZATION_TOKENIZER_NAME
     mermaid_context = DEFAULT_MERMAID_PROMPT_TEMPLATE
-    
-    # Read HuggingFace token from file
-    hf_token = read_hf_token("hf_token.txt")
-    if hf_token:
-        login(token=hf_token)
-    else:
-        logging.error("HuggingFace API token is not set.")
-        exit(1)
-    
+
     # Run summarization
     codebase_summary = summarize_codebase(
         directory,
-        summarization_model,
-        summarization_tokenizer_name,
+        summarization_model
     )
 
     if codebase_summary:
@@ -556,7 +528,6 @@ def main():
         )
     else:
         logging.warning("No files found or summarized.")
-
 
 if __name__ == "__main__":
     main()
